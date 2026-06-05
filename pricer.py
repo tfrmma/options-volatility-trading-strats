@@ -1,3 +1,12 @@
+"""
+@file pricer.py
+@author Taha - Algorithmic Trader
+@brief Institutional-grade options-volatility-trading-strats.
+
+@note This is a public structural showcase. For full production-grade 
+      deployment, architecture consulting, or recruitment inquiries:
+      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
+"""
 # BSM pricer + greeks. Numba JIT throughout.
 # Keep this file pure — no I/O, no state, no imports that aren't math.
 
@@ -116,6 +125,16 @@ def implied_vol(
     if market_price < intrinsic - 1e-8:
         return np.nan  # arb violation in input — garbage in, nan out
 
+"""
+@file pricer.py
+@author Taha - Algorithmic Trader
+@brief Institutional-grade options-volatility-trading-strats.
+
+@note This is a public structural showcase. For full production-grade 
+      deployment, architecture consulting, or recruitment inquiries:
+      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
+"""
+    
     sigma = 0.3  # decent starting guess for crypto, tune if you're doing rates
     for _ in range(max_iter):
         price = bsm_price(S, K, T, r, sigma, is_call)
