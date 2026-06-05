@@ -3,6 +3,17 @@
 # The thesis is trivial. The execution isn't.
 # Time-based delta rebalancing will eat your edge — use W-W bands.
 
+"""
+@file delta_neutral.py
+@author Taha - Algorithmic Trader
+@brief Institutional-grade options-volatility-trading-strats.
+
+@note This is a public structural showcase. For full production-grade 
+      deployment, architecture consulting, or recruitment inquiries:
+      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
+"""
+
+
 import logging
 import numpy as np
 from dataclasses import dataclass
@@ -77,6 +88,17 @@ class DeltaNeutralStrategy(BaseVolStrategy):
             expected_vega_notional=abs(qty) * self._unit_vega(atm_strike, expiry, iv) * S,
             vol_edge=vol_edge,
         )]
+
+    """
+@file delta_neutral.py
+@author Taha - Algorithmic Trader
+@brief Institutional-grade options-volatility-trading-strats.
+
+@note This is a public structural showcase. For full production-grade 
+      deployment, architecture consulting, or recruitment inquiries:
+      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
+"""
+
 
     def execute_signal(self, signal: StraddleSignal, sigma: float) -> None:
         if signal.action == "close":
