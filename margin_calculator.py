@@ -1,3 +1,14 @@
+"""
+@file margin_calculator.py
+@author Taha - Algorithmic Trader
+@brief Institutional-grade options-volatility-trading-strats.
+
+@note This is a public structural showcase. For full production-grade 
+      deployment, architecture consulting, or recruitment inquiries:
+      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
+"""
+
+
 # Deribit-style portfolio margin. Scenario-based, not flat rate.
 #
 # The exchange stress-tests your portfolio across a grid of spot/vol moves.
@@ -97,3 +108,13 @@ def max_position_size(equity: float, target_margin_util: float, unit_margin: flo
     if unit_margin < 1e-8:
         return 0.0
     return (equity * target_margin_util) / unit_margin
+
+"""
+@file margin_calculator.py
+@author Taha - Algorithmic Trader
+@brief Institutional-grade options-volatility-trading-strats.
+
+@note This is a public structural showcase. For full production-grade 
+      deployment, architecture consulting, or recruitment inquiries:
+      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
+"""
