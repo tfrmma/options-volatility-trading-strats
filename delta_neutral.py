@@ -78,16 +78,6 @@ class DeltaNeutralStrategy(BaseVolStrategy):
             vol_edge=vol_edge,
         )]
 
-    """
-@file delta_neutral.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
-
 
     def execute_signal(self, signal: StraddleSignal, sigma: float) -> None:
         if signal.action == "close":
