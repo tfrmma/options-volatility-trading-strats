@@ -1,12 +1,3 @@
-"""
-@file pricer.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
 # BSM pricer + greeks. Numba JIT throughout.
 # Keep this file pure — no I/O, no state, no imports that aren't math.
 
