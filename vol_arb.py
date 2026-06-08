@@ -4,16 +4,6 @@
 # and goes haywire around macro events. Track the z-score, don't just sell vol
 # mechanically every time IV > RV.
 
-"""
-@file vol_arb.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
-
 import logging
 import numpy as np
 from dataclasses import dataclass
@@ -180,14 +170,3 @@ class VolArbStrategy(BaseVolStrategy):
         if spot < 10000:  return round(spot / 50)  * 50.0
         if spot < 100000: return round(spot / 500) * 500.0
         return            round(spot / 1000) * 1000.0
-
-"""
-@file vol_arb.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
-
