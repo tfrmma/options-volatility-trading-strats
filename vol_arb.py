@@ -15,7 +15,6 @@ from core.estimators import yang_zhang, ewma_vol
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class VRPMetrics:
     implied_vol: float
