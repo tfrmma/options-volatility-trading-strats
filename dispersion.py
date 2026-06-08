@@ -1,14 +1,3 @@
-"""
-@file dispersion.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
-
-
 # Dispersion trading. Short index vol, long component vol.
 #
 # Thesis: implied correlation is systematically too high because people overpay
@@ -91,16 +80,6 @@ class DispersionStrategy(BaseVolStrategy):
             impl_corr = 0.0
         else:
             impl_corr = float(np.clip((index_var - diag_term) / off_diag_term, 0.0, 1.0))
-
-"""
-@file dispersion.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
 
         # TODO: realized correlation should come from actual pairwise return correlations
         # this proxy is a rough estimate — fine for signal generation, wrong for sizing
