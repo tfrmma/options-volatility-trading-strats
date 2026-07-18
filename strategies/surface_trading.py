@@ -5,7 +5,7 @@
 # Skew: sell overpriced wing, buy cheap wing.
 #
 # All positions should be vega/theta neutral at entry.
-# Residual exposure is vanna, volga — that's fine, that's the trade.
+# Residual exposure is vanna, volga, that's fine, that's the trade.
 
 import logging
 import numpy as np
@@ -203,7 +203,7 @@ class VolSurfaceTrading(BaseVolStrategy):
         return None
 
     def _find_delta_strike(self, target_delta: float, expiry: float, atm_iv: float, is_call: bool) -> float:
-        # binary search — slow but called infrequently. don't optimize until it's actually hot
+        # binary search, slow but called infrequently. don't optimize until it's actually hot
         lo, hi = self.spot * 0.5, self.spot * 2.0
         for _ in range(50):
             mid   = 0.5 * (lo + hi)
