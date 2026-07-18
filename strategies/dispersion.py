@@ -30,7 +30,7 @@ class ComponentSpec:
 class DispersionMetrics:
     implied_correlation: float
     realized_correlation: float
-    correlation_premium: float   # IC - RC — this is what you're trading
+    correlation_premium: float   # IC - RC, this is what you're trading
     index_iv: float
     basket_iv: float
     fair_index_iv: float         # what index IV should be given component IVs + RC
@@ -45,6 +45,10 @@ class DispersionPosition:
 
 
 class DispersionStrategy(BaseVolStrategy):
+    # TODO: BaseVolStrategy prices every leg off one self.spot. that's fine for the
+    # other three strategies but not here, index legs and component legs sit on
+    # different underlyings and this class doesn't correct for that yet. greeks
+    # past entry are only trustworthy for the index side.
 
     def __init__(
         self,
@@ -82,7 +86,7 @@ class DispersionStrategy(BaseVolStrategy):
             impl_corr = float(np.clip((index_var - diag_term) / off_diag_term, 0.0, 1.0))
 
         # TODO: realized correlation should come from actual pairwise return correlations
-        # this proxy is a rough estimate — fine for signal generation, wrong for sizing
+        # this proxy is a rough estimate, fine for signal generation, wrong for sizing
         realized_corr = float(np.clip(np.mean(rvs) / max(index_iv, 1e-8), 0.0, 1.0))
 
         fair_var = realized_corr * off_diag_term + diag_term
@@ -126,7 +130,7 @@ class DispersionStrategy(BaseVolStrategy):
         index_unit_v = self._straddle_vega(self.spot, index_strike, expiry, sigma_index)
 
         if index_unit_v < 1e-8:
-            logger.error("zero index vega — aborting")
+            logger.error("zero index vega, aborting")
             return
 
         index_qty = -self.vega_notional_index / (index_unit_v * self.spot * 2.0)
