@@ -15,7 +15,7 @@ class SimConfig:
     dt: float          = 1.0 / 252.0
     n_steps: int       = 252
 
-    # GARCH(1,1) — keep alpha + beta < 1 or variance explodes
+    # GARCH(1,1), keep alpha + beta < 1 or variance explodes
     garch_omega: float = 0.01
     garch_alpha: float = 0.10
     garch_beta: float  = 0.85
@@ -25,11 +25,11 @@ class SimConfig:
     jump_mean: float      = 0.0
     jump_std: float       = 0.05
 
-    # bid/ask widens with vol — rough but directionally correct
+    # bid/ask widens with vol, rough but directionally correct
     base_spread_bps: float       = 5.0
     spread_vol_sensitivity: float = 2.0
 
-    # occasional toxic prints — price gaps that aren't explainable by diffusion
+    # occasional toxic prints, price gaps that aren't explainable by diffusion
     toxic_prob: float   = 0.02
     toxic_impact: float = 0.015
 
@@ -65,7 +65,7 @@ def simulate_market(cfg: SimConfig, seed: Optional[int] = None) -> list[SimStep]
         log_ret  = diffusion + jump
         new_spot = spot * np.exp(log_ret)
 
-        # GARCH update — work in return scale, not annualized
+        # GARCH update, work in return scale, not annualized
         var_t = cfg.garch_omega + cfg.garch_alpha * log_ret**2 + cfg.garch_beta * var_t
         var_t = max(var_t, 1e-8)
 
