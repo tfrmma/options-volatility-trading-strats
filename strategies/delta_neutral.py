@@ -1,7 +1,7 @@
 # Delta-neutral straddles/strangles. Trade realized vs implied vol.
 #
 # The thesis is trivial. The execution isn't.
-# Time-based delta rebalancing will eat your edge — use W-W bands.
+# Time-based delta rebalancing will eat your edge, use W-W bands.
 
 import logging
 import numpy as np
@@ -30,7 +30,7 @@ class DeltaNeutralStrategy(BaseVolStrategy):
         self,
         spot: float,
         rate: float = 0.0,
-        vol_edge_threshold: float = 0.03,   # 3 vol pts minimum — below this the fees eat you
+        vol_edge_threshold: float = 0.03,   # 3 vol pts minimum, below this the fees eat you
         vega_target: float = 5000.0,
         strangle_width: float = 0.0,        # 0 = straddle. 0.1 = 10% OTM wings
         ww_band_multiplier: float = 1.5,
