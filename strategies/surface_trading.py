@@ -204,6 +204,9 @@ class VolSurfaceTrading(BaseVolStrategy):
 
     def _find_delta_strike(self, target_delta: float, expiry: float, atm_iv: float, is_call: bool) -> float:
         # binary search, slow but called infrequently. don't optimize until it's actually hot
+        # call delta falls as strike rises (more OTM). abs(put delta) rises as strike rises
+        # (more ITM, puts pay off above strike). the two are mirror images of each other,
+        # not the same direction, so the bracket update has to flip for puts.
         lo, hi = self.spot * 0.5, self.spot * 2.0
         for _ in range(50):
             mid   = 0.5 * (lo + hi)
@@ -212,10 +215,10 @@ class VolSurfaceTrading(BaseVolStrategy):
             d = delta if is_call else abs(delta)
             if abs(d - target_delta) < 1e-5:
                 return mid
-            if d > target_delta:
-                lo = mid if is_call else hi
+            if is_call:
+                lo, hi = (mid, hi) if d > target_delta else (lo, mid)
             else:
-                hi = mid if is_call else lo
+                lo, hi = (lo, mid) if d > target_delta else (mid, hi)
         return 0.5 * (lo + hi)
 
     def _straddle_vega(self, strike: float, expiry: float, sigma: float) -> float:
