@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "options-volatility-trading-strats"
+version = "0.1.0"
+description = "Crypto options volatility strategies for Deribit/Binance"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "numba>=0.58",
+    "polars>=0.20",
+    "pyarrow>=14.0",
+    "scipy>=1.11",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "strategies*", "backtest*", "data*"]
