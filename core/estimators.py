@@ -1,7 +1,7 @@
-# Vol estimators. Yang-Zhang is the default — don't use close-to-close
+# Vol estimators. Yang-Zhang is the default, don't use close-to-close
 # unless you enjoy throwing away half your signal.
 #
-# Yang & Zhang (2000) — handles overnight gaps, minimum variance, drift-independent.
+# Yang & Zhang (2000), handles overnight gaps, minimum variance, drift-independent.
 # That's three things close-to-close gets wrong simultaneously.
 
 import numpy as np
@@ -89,7 +89,7 @@ def rolling_yang_zhang(
 
 def realized_variance_hf(log_returns: np.ndarray, subsampling: int = 1) -> float:
     # subsampling > 1 averages over multiple grids to reduce microstructure noise.
-    # use 5-min bars from tick data — raw ticks are just bid-ask bounce
+    # use 5-min bars from tick data, raw ticks are just bid-ask bounce
     if subsampling == 1:
         return float(np.sum(log_returns**2))
 
