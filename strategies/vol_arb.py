@@ -1,6 +1,6 @@
 # VRP harvesting. Sell variance when implied is rich vs realized.
 #
-# The VRP is persistent but not constant — it compresses, flips sign occasionally,
+# The VRP is persistent but not constant, it compresses, flips sign occasionally,
 # and goes haywire around macro events. Track the z-score, don't just sell vol
 # mechanically every time IV > RV.
 
@@ -36,7 +36,7 @@ class VRPSignal:
 class VolArbStrategy(BaseVolStrategy):
     """
     Short variance when IV > RV (normal regime), long when unusually cheap.
-    Position size scales with VRP z-score — don't go full size on a 1-sigma signal.
+    Position size scales with VRP z-score, don't go full size on a 1-sigma signal.
 
     Exit when VRP has mean-reverted, not on a timer.
     """
@@ -94,7 +94,7 @@ class VolArbStrategy(BaseVolStrategy):
             rv = ewma_vol(market_data["log_returns"])
         else:
             rv = market_data.get("realized_vol_fallback", iv * 0.9)
-            logger.warning("using fallback RV — no OHLCV or returns in market_data")
+            logger.warning("using fallback RV, no OHLCV or returns in market_data")
 
         metrics = self.compute_vrp(iv, rv)
 
@@ -121,7 +121,7 @@ class VolArbStrategy(BaseVolStrategy):
             return
 
         if signal.action == "hold":
-            # TODO: implement actual vega scaling here — partial close/add
+            # TODO: implement actual vega scaling here, partial close/add
             # right now just re-hedges delta, which is better than nothing but not the plan
             if self.should_rebalance(sigma):
                 self.hedge_delta(sigma)
@@ -132,7 +132,7 @@ class VolArbStrategy(BaseVolStrategy):
         unit_v = self._straddle_unit_vega(strike, signal.expiry, sigma)
 
         if unit_v < 1e-8:
-            logger.warning("zero unit vega — skipping entry")
+            logger.warning("zero unit vega, skipping entry")
             return
 
         qty = sign * signal.target_vega * signal.confidence / (unit_v * self.spot * 2.0)
