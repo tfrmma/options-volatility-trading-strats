@@ -1,7 +1,7 @@
 # Deribit WebSocket feed. asyncio + aiohttp.
 # Don't use requests in an async context. You know who you are.
 #
-# Deribit has the better options liquidity for BTC/ETH — primary feed.
+# Deribit has the better options liquidity for BTC/ETH, primary feed.
 # Mark IV from Deribit is what you'll get filled at so use their greeks too.
 
 import asyncio
@@ -25,7 +25,7 @@ class TickerData:
     ask: float
     mark_price: float
     index_price: float
-    iv: float            # mark IV — Deribit sends as %, we convert to decimal
+    iv: float            # mark IV, Deribit sends as %, we convert to decimal
     delta: float
     gamma: float
     vega: float
