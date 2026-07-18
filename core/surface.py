@@ -1,7 +1,7 @@
 # SVI surface calibration. Gatheral (2004) parametrization per slice.
 # Static arb checks: butterfly per slice, calendar across slices.
 #
-# Don't interpolate in vol space — interpolate total variance.
+# Don't interpolate in vol space, interpolate total variance.
 # Variance is additive. Vol isn't. This is not a subtle point.
 
 import numpy as np
@@ -33,7 +33,7 @@ class SVIParams:
 
     def is_valid(self) -> bool:
         # necessary conditions for no butterfly arb within slice
-        # not sufficient across slices — that needs the calendar check
+        # not sufficient across slices, that needs the calendar check
         if self.b < 0 or self.sigma <= 0 or abs(self.rho) >= 1:
             return False
         if self.a + self.b * self.sigma * np.sqrt(1 - self.rho**2) < 0:
@@ -56,7 +56,7 @@ class VolSurface:
 
         idx = np.searchsorted(self.expiries, expiry)
 
-        # flat extrapolation beyond boundaries — crude but beats exploding
+        # flat extrapolation beyond boundaries, crude but beats exploding
         if idx == 0:
             return float(self.slices[0].implied_vol(np.array([log_moneyness]))[0])
         if idx >= len(self.slices):
@@ -125,7 +125,7 @@ def fit_svi_slice(
             continue
 
     if best_result is None:
-        # calibration totally failed — return flat surface and scream about it
+        # calibration totally failed, return flat surface and scream about it
         warnings.warn(f"SVI calibration failed for T={expiry:.4f}, falling back to flat")
         atm_vol = float(np.mean(np.sqrt(w / max(expiry, 1e-10))))
         return SVIParams(a=atm_vol**2 * expiry, b=0.01, rho=0.0, m=0.0, sigma=0.1, expiry=expiry)
@@ -134,7 +134,7 @@ def fit_svi_slice(
     params = SVIParams(a=a, b=b, rho=rho, m=m, sigma=sigma, expiry=expiry)
 
     if not params.is_valid():
-        warnings.warn(f"SVI params invalid at T={expiry:.4f} — check input data quality")
+        warnings.warn(f"SVI params invalid at T={expiry:.4f}, check input data quality")
 
     return params
 
