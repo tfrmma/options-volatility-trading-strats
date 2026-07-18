@@ -1,5 +1,5 @@
 # BSM pricer + greeks. Numba JIT throughout.
-# Keep this file pure — no I/O, no state, no imports that aren't math.
+# Keep this file pure, no I/O, no state, no imports that aren't math.
 
 import numpy as np
 from numba import njit, prange
@@ -7,7 +7,7 @@ import warnings
 
 
 # can't use scipy.norm inside njit, so inline the CDF.
-# Abramowitz & Stegun 26.2.17 — ~6 decimal places, good enough
+# Abramowitz & Stegun 26.2.17, ~6 decimal places, good enough
 @njit(cache=True)
 def _norm_cdf(x: float) -> float:
     t = 1.0 / (1.0 + 0.2316419 * abs(x))
@@ -39,7 +39,7 @@ def bsm_price(S: float, K: float, T: float, r: float, sigma: float, is_call: boo
 
 @njit(cache=True)
 def bsm_greeks(S: float, K: float, T: float, r: float, sigma: float, is_call: bool):
-    # returns (delta, gamma, vega, theta, rho) — vega/theta are per-unit, not per pct point
+    # returns (delta, gamma, vega, theta, rho), vega/theta are per-unit, not per pct point
     if T <= 1e-10 or sigma <= 1e-10:
         delta = 1.0 if (is_call and S > K) else (-1.0 if (not is_call and S < K) else 0.0)
         return delta, 0.0, 0.0, 0.0, 0.0
@@ -114,18 +114,8 @@ def implied_vol(
 
     intrinsic = max(S - K, 0.0) if is_call else max(K - S, 0.0)
     if market_price < intrinsic - 1e-8:
-        return np.nan  # arb violation in input — garbage in, nan out
+        return np.nan  # arb violation in input, garbage in nan out
 
-"""
-@file pricer.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
-    
     sigma = 0.3  # decent starting guess for crypto, tune if you're doing rates
     for _ in range(max_iter):
         price = bsm_price(S, K, T, r, sigma, is_call)
@@ -136,13 +126,13 @@ def implied_vol(
             return sigma
 
         if abs(vega) < 1e-12:
-            break  # vega collapsed, NR is useless here — fall through to bisection
+            break  # vega collapsed, NR is useless here, fall through to bisection
 
         sigma -= diff / vega
         if sigma <= 0:
             sigma = 1e-4
 
-    # bisection fallback — ugly but guaranteed to converge
+    # bisection fallback, ugly but guaranteed to converge
     lo, hi = 1e-4, 10.0
     for _ in range(200):
         mid = 0.5 * (lo + hi)
