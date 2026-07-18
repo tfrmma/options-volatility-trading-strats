@@ -163,11 +163,15 @@ class BaseVolStrategy(ABC):
         return pnl
 
     def mark_to_market(self, sigma: float) -> float:
-        total = sum(
+        # NOTE: spread_capture, gamma_pnl, theta_decay, vega_pnl are never populated
+        # anywhere in this codebase, only delta_pnl and transaction_costs are tracked.
+        # Full greeks-based attribution is a separate piece of work, not covered here.
+        unrealized_option_pnl = sum(
             leg.qty * (bsm_price(self.spot, leg.strike, leg.expiry, self.rate, sigma, leg.is_call) - leg.entry_price)
             for leg in self.legs
         )
-        return total + self.realized_pnl + self.pnl.transaction_costs
+        self.pnl.recompute_total()
+        return unrealized_option_pnl + self.realized_pnl + self.pnl.total
 
     @abstractmethod
     def generate_signals(self, market_data: dict) -> list:
