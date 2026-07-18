@@ -130,10 +130,11 @@ class DeltaNeutralStrategy(BaseVolStrategy):
         return vega_pnl < max_loss
 
     def _close_all(self, sigma: float) -> None:
+        # hedge PnL is already fully accrued in self.pnl.delta_pnl via update_spot(),
+        # closing the hedge here is just zeroing the position, not a new PnL event.
         while self.legs:
             leg = self.legs[0]
             self.remove_leg(0, bsm_price(self.spot, leg.strike, leg.expiry, self.rate, sigma, leg.is_call))
-        self.realized_pnl += self.hedge_qty * self.spot
         self.hedge_qty = 0.0
 
     def _size_for_vega(self, strike: float, expiry: float, sigma: float) -> float:
