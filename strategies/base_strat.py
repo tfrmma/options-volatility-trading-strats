@@ -67,7 +67,7 @@ class BaseVolStrategy(ABC):
         self,
         spot: float,
         rate: float = 0.0,
-        taker_fee: float = 0.0006,    # 6bps — Deribit taker as of last check
+        taker_fee: float = 0.0006,    # 6bps, Deribit taker as of last check
         maker_fee: float = -0.0001,   # -1bp rebate
         max_vega_notional: float = 1e6,
         max_delta_notional: float = 5e5,
