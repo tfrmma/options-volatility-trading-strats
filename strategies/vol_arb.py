@@ -153,10 +153,11 @@ class VolArbStrategy(BaseVolStrategy):
         return min(zscore / (self.vrp_entry_zscore * 2.0), 1.0) * self.max_vega_target
 
     def _flatten(self, sigma: float) -> None:
+        # hedge PnL is already fully accrued in self.pnl.delta_pnl via update_spot(),
+        # closing the hedge here is just zeroing the position, not a new PnL event.
         while self.legs:
             leg = self.legs[0]
             self.remove_leg(0, bsm_price(self.spot, leg.strike, leg.expiry, self.rate, sigma, leg.is_call))
-        self.realized_pnl += self.hedge_qty * self.spot
         self.hedge_qty = 0.0
 
     def _straddle_unit_vega(self, strike: float, expiry: float, sigma: float) -> float:
