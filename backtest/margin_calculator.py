@@ -1,19 +1,8 @@
-"""
-@file margin_calculator.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
-
-
 # Deribit-style portfolio margin. Scenario-based, not flat rate.
 #
 # The exchange stress-tests your portfolio across a grid of spot/vol moves.
 # Your margin is the worst-case loss across that grid. This is the right way
-# to think about tail risk — don't use Reg-T style fixed margin for options.
+# to think about tail risk, don't use Reg-T style fixed margin for options.
 
 import numpy as np
 from dataclasses import dataclass
@@ -108,13 +97,3 @@ def max_position_size(equity: float, target_margin_util: float, unit_margin: flo
     if unit_margin < 1e-8:
         return 0.0
     return (equity * target_margin_util) / unit_margin
-
-"""
-@file margin_calculator.py
-@author Taha - Algorithmic Trader
-@brief Institutional-grade options-volatility-trading-strats.
-
-@note This is a public structural showcase. For full production-grade 
-      deployment, architecture consulting, or recruitment inquiries:
-      Contact: email: fadilrezokt@gmail.com / linkedin.com/in/tahaotc
-"""
