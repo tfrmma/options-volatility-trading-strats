@@ -1,5 +1,5 @@
 # Partitioned Parquet storage for options tick data.
-# Partition by (dataset/currency=X/date=Y) — avoids full scans when you
+# Partition by (dataset/currency=X/date=Y), avoids full scans when you
 # only need one currency for a specific date range.
 # Learned this after trying to query 200GB of unpartitioned options data. Never again.
 
