@@ -1,7 +1,7 @@
 # Discrete-event backtest engine.
 #
 # Execute against bid/ask. Not mid. Not mark. Bid/ask.
-# Options have 20-50bps spreads minimum — if you fill at mid your backtest
+# Options have 20-50bps spreads minimum, if you fill at mid your backtest
 # is fiction and you'll find out the hard way in production.
 
 import logging
@@ -154,7 +154,11 @@ class BacktestEngine:
         return fill
 
     def _mtm(self, snap: MarketSnapshot) -> float:
-        # mark options at mid — good enough for daily PnL, not for intraday
+        # mark options at mid, good enough for daily PnL, not for intraday
+        # TODO: this marks every open leg at the current snapshot's bid/ask, which is
+        # only correct if the feed emits one row per live instrument. multi-leg books
+        # (straddles, dispersion) need per-leg quotes here, not one snapshot's price
+        # applied across the board.
         option_mid = 0.5 * (snap.option_bid + snap.option_ask)
         mtm = self._spot_position * snap.spot
         for key, qty in self._option_positions.items():
