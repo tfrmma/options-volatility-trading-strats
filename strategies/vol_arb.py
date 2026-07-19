@@ -12,6 +12,7 @@ from typing import Optional
 from strategies.base_strat import BaseVolStrategy, OptionLeg
 from core.pricer import bsm_price, bsm_greeks
 from core.estimators import yang_zhang, ewma_vol
+from core.chain import target_strike
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class VolArbStrategy(BaseVolStrategy):
         vrp_exit_zscore: float = 0.0,
         vrp_history_window: int = 60,
         max_vega_target: float = 10000.0,
+        vega_rebalance_tol: float = 0.15,   # don't touch the position for less than 15% drift
         **kwargs,
     ):
         super().__init__(spot=spot, rate=rate, **kwargs)
@@ -58,6 +60,7 @@ class VolArbStrategy(BaseVolStrategy):
         self.vrp_exit_zscore   = vrp_exit_zscore
         self.vrp_history_window = vrp_history_window
         self.max_vega_target   = max_vega_target
+        self.vega_rebalance_tol = vega_rebalance_tol
 
         self._vrp_history: list[float] = []
         self._in_position = False
@@ -121,14 +124,13 @@ class VolArbStrategy(BaseVolStrategy):
             return
 
         if signal.action == "hold":
-            # TODO: implement actual vega scaling here, partial close/add
-            # right now just re-hedges delta, which is better than nothing but not the plan
+            self._rebalance_vega(signal, sigma)
             if self.should_rebalance(sigma):
                 self.hedge_delta(sigma)
             return
 
         sign   = -1.0 if signal.action == "short_var" else 1.0
-        strike = self._round_strike(self.spot)
+        strike = target_strike(self.spot, signal.expiry, self.chain)
         unit_v = self._straddle_unit_vega(strike, signal.expiry, sigma)
 
         if unit_v < 1e-8:
@@ -152,6 +154,35 @@ class VolArbStrategy(BaseVolStrategy):
     def _scaled_vega(self, zscore: float) -> float:
         return min(zscore / (self.vrp_entry_zscore * 2.0), 1.0) * self.max_vega_target
 
+    def _rebalance_vega(self, signal: VRPSignal, sigma: float) -> None:
+        # scale the existing straddle toward the new target as conviction (z-score)
+        # drifts, instead of freezing size at entry and only ever touching delta after.
+        # partial close on the way down, add at the same strikes on the way up.
+        if not self.legs:
+            return
+
+        current_vega_notional = abs(self.portfolio_greeks(sigma).vega) * self.spot
+        target_vega_notional  = signal.target_vega * signal.confidence
+        if current_vega_notional < 1e-8:
+            return
+
+        ratio = target_vega_notional / current_vega_notional
+        if abs(ratio - 1.0) < self.vega_rebalance_tol:
+            return  # not worth paying the spread over a small wobble in conviction
+
+        for idx in reversed(range(len(self.legs))):
+            leg   = self.legs[idx]
+            price = bsm_price(self.spot, leg.strike, leg.expiry, self.rate, sigma, leg.is_call)
+            if ratio < 1.0:
+                self.partial_close_leg(idx, abs(leg.qty) * (1.0 - ratio), price)
+            else:
+                add_qty = leg.qty * (ratio - 1.0)
+                if abs(add_qty) > 1e-8:
+                    self.add_leg(OptionLeg(strike=leg.strike, expiry=leg.expiry, is_call=leg.is_call,
+                                           qty=add_qty, entry_price=price))
+
+        logger.info("vega_rebalanced", extra={"ratio": ratio, "target_vega_notional": target_vega_notional})
+
     def _flatten(self, sigma: float) -> None:
         # hedge PnL is already fully accrued in self.pnl.delta_pnl via update_spot(),
         # closing the hedge here is just zeroing the position, not a new PnL event.
@@ -163,10 +194,3 @@ class VolArbStrategy(BaseVolStrategy):
     def _straddle_unit_vega(self, strike: float, expiry: float, sigma: float) -> float:
         _, _, vega, _, _ = bsm_greeks(self.spot, strike, expiry, self.rate, sigma, True)
         return vega  # call and put vega are the same in BSM
-
-    @staticmethod
-    def _round_strike(spot: float) -> float:
-        if spot < 1000:   return round(spot / 5)   * 5.0
-        if spot < 10000:  return round(spot / 50)  * 50.0
-        if spot < 100000: return round(spot / 500) * 500.0
-        return            round(spot / 1000) * 1000.0
