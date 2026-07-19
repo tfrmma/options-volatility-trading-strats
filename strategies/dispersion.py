@@ -18,6 +18,7 @@ from typing import Optional
 
 from strategies.base_strat import UnderlyingBook, OptionLeg
 from core.pricer import bsm_price, bsm_greeks
+from core.chain import OptionChain, target_strike
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +59,19 @@ class DispersionStrategy:
         rate: float = 0.0,
         corr_premium_threshold: float = 0.05,   # 5 correlation points minimum
         vega_notional_index: float = 50000.0,
+        index_chain: Optional[OptionChain] = None,
+        component_chains: Optional[dict[str, OptionChain]] = None,
         **book_kwargs,
     ):
         self.rate = rate
         self.components_spec = {c.symbol: c for c in components}
         self.corr_premium_threshold = corr_premium_threshold
         self.vega_notional_index = vega_notional_index
+        component_chains = component_chains or {}
 
-        self.index_book = UnderlyingBook(spot=index_spot, rate=rate, **book_kwargs)
+        self.index_book = UnderlyingBook(spot=index_spot, rate=rate, chain=index_chain, **book_kwargs)
         self.component_books: dict[str, UnderlyingBook] = {
-            c.symbol: UnderlyingBook(spot=c.spot, rate=rate, **book_kwargs)
+            c.symbol: UnderlyingBook(spot=c.spot, rate=rate, chain=component_chains.get(c.symbol), **book_kwargs)
             for c in components
         }
         self.position = DispersionPosition()
@@ -202,7 +206,7 @@ class DispersionStrategy:
     def enter_dispersion(self, expiry: float, metrics: DispersionMetrics, sigma_index: float) -> None:
         # sell index straddle, buy component straddles vega-weighted
         index_spot = self.index_book.spot
-        index_strike = self._round_strike(index_spot)
+        index_strike = target_strike(index_spot, expiry, self.index_book.chain)
         index_unit_v = self._straddle_vega(index_spot, index_strike, expiry, sigma_index)
 
         if index_unit_v < 1e-8:
@@ -220,7 +224,7 @@ class DispersionStrategy:
 
         for comp in self.components_spec.values():
             book = self.component_books[comp.symbol]
-            comp_K = self._round_strike(book.spot)
+            comp_K = target_strike(book.spot, expiry, book.chain)
             unit_v = self._straddle_vega(book.spot, comp_K, expiry, comp.implied_vol)
             if unit_v < 1e-8:
                 logger.warning(f"zero vega for {comp.symbol}, skipping component leg")
@@ -269,10 +273,3 @@ class DispersionStrategy:
     def _straddle_vega(spot: float, strike: float, expiry: float, sigma: float) -> float:
         _, _, vega, _, _ = bsm_greeks(spot, strike, expiry, 0.0, sigma, True)
         return vega
-
-    @staticmethod
-    def _round_strike(spot: float) -> float:
-        if spot < 1000:   return round(spot / 5)   * 5.0
-        if spot < 10000:  return round(spot / 50)  * 50.0
-        if spot < 100000: return round(spot / 500) * 500.0
-        return            round(spot / 1000) * 1000.0
