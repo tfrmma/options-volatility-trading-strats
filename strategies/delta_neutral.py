@@ -10,6 +10,7 @@ from typing import Optional
 
 from strategies.base_strat import BaseVolStrategy, OptionLeg
 from core.pricer import bsm_greeks, bsm_price
+from core.chain import target_strike
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class DeltaNeutralStrategy(BaseVolStrategy):
         if abs(vol_edge) < self.vol_edge_threshold:
             return []
 
-        atm_strike = self._round_strike(S)
+        atm_strike = target_strike(S, expiry, self.chain)
         qty = self._size_for_vega(atm_strike, expiry, iv)
         if qty < 1e-6:
             return []
@@ -85,8 +86,8 @@ class DeltaNeutralStrategy(BaseVolStrategy):
             return
 
         sign = -1.0 if signal.action == "enter_short" else 1.0
-        call_K = signal.atm_strike * (1.0 + self.strangle_width)
-        put_K  = signal.atm_strike * (1.0 - self.strangle_width)
+        call_K = target_strike(signal.atm_strike * (1.0 + self.strangle_width), signal.expiry, self.chain)
+        put_K  = target_strike(signal.atm_strike * (1.0 - self.strangle_width), signal.expiry, self.chain)
 
         self.add_leg(OptionLeg(
             strike=call_K, expiry=signal.expiry, is_call=True,
@@ -146,11 +147,3 @@ class DeltaNeutralStrategy(BaseVolStrategy):
     def _unit_vega(self, strike: float, expiry: float, sigma: float) -> float:
         _, _, vega, _, _ = bsm_greeks(self.spot, strike, expiry, self.rate, sigma, True)
         return vega
-
-    @staticmethod
-    def _round_strike(spot: float) -> float:
-        # TODO: pull listed strikes from chain instead of rounding. this is embarrassing
-        if spot < 1000:      return round(spot / 5)    * 5.0
-        if spot < 10000:     return round(spot / 50)   * 50.0
-        if spot < 100000:    return round(spot / 500)  * 500.0
-        return               round(spot / 1000) * 1000.0
