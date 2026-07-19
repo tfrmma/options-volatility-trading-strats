@@ -129,3 +129,80 @@ def generate_option_chain(
                 })
 
     return records
+
+
+def simulate_dispersion_feed(
+    index_symbol: str,
+    weights: dict[str, float],
+    component_configs: dict[str, SimConfig],
+    expiry: float,
+    seed: int = 0,
+    option_spread_bps: float = 80.0,
+    index_vol_diversification: float = 0.85,
+):
+    # Synthetic multi-symbol feed for backtesting dispersion end to end, not for
+    # anything else. Two simplifications that keep this tractable:
+    #
+    # 1. Each component gets its own independent GARCH path (simulate_market), the
+    #    index is built as the weighted SPOT sum of components, that's literally what
+    #    an index is, and it produces realistic (imperfect) index/component
+    #    correlation for free instead of needing a full correlated multivariate GARCH
+    #    model. Index vol is the weighted average of component vols scaled down by
+    #    `index_vol_diversification`, real index vol sits below that average whenever
+    #    correlation < 1, which is the entire dynamic dispersion trades on. The scaling
+    #    factor is an approximation, not fit to anything.
+    #
+    # 2. Only a single fixed-strike (ATM at t=0) straddle is quoted per symbol per
+    #    step, not a full chain, that's the specific instrument set a dispersion trade
+    #    actually holds for one trade's lifetime.
+    #
+    # Feed ordering per timestep: every component's call+put, THEN the index's
+    # call+put last. DispersionBacktestAdapter relies on that order to know a
+    # timestep's quotes are all in before it makes a decision, this is a convention
+    # specific to this generator + that adapter, not a general engine requirement.
+    import polars as pl
+    from core.pricer import bsm_price
+
+    paths = {sym: simulate_market(cfg, seed=seed + i) for i, (sym, cfg) in enumerate(component_configs.items())}
+    n = min(len(p) for p in paths.values())
+
+    strikes = {sym: round(paths[sym][0].spot) for sym in paths}
+    strikes[index_symbol] = round(sum(weights[sym] * paths[sym][0].spot for sym in paths))
+
+    rows = []
+    for t in range(n):
+        index_spot = 0.0
+        index_vol_weighted = 0.0
+
+        for sym, path in paths.items():
+            step = path[t]
+            index_spot += weights[sym] * step.spot
+            index_vol_weighted += weights[sym] * step.vol
+
+            for is_call in (True, False):
+                mid  = bsm_price(step.spot, strikes[sym], expiry, 0.0, step.vol, is_call)
+                half = mid * option_spread_bps * 1e-4
+                rows.append({
+                    "timestamp": float(t), "spot": step.spot, "sigma": step.vol,
+                    "bid": step.bid, "ask": step.ask, "expiry": expiry,
+                    "strike": float(strikes[sym]), "is_call": is_call,
+                    "option_bid": max(mid - half, 0.0), "option_ask": mid + half,
+                    "symbol": sym,
+                })
+
+        index_vol = index_vol_weighted * index_vol_diversification
+        index_bid = index_spot * (1.0 - 0.0005)
+        index_ask = index_spot * (1.0 + 0.0005)
+
+        for is_call in (True, False):   # call first, put last: put is the decision trigger
+            mid  = bsm_price(index_spot, strikes[index_symbol], expiry, 0.0, index_vol, is_call)
+            half = mid * option_spread_bps * 1e-4
+            rows.append({
+                "timestamp": float(t), "spot": index_spot, "sigma": index_vol,
+                "bid": index_bid, "ask": index_ask, "expiry": expiry,
+                "strike": float(strikes[index_symbol]), "is_call": is_call,
+                "option_bid": max(mid - half, 0.0), "option_ask": mid + half,
+                "symbol": index_symbol,
+            })
+
+    return pl.DataFrame(rows), strikes
