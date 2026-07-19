@@ -9,6 +9,7 @@ from typing import Optional
 import numpy as np
 
 from core.pricer import batch_greeks, bsm_price
+from core.chain import OptionChain
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ class BaseVolStrategy(ABC):
         maker_fee: float = -0.0001,   # -1bp rebate
         max_vega_notional: float = 1e6,
         max_delta_notional: float = 5e5,
+        chain: Optional[OptionChain] = None,   # real listed strikes, falls back to a
+                                                # synthetic grid heuristic if not given
     ):
         self.spot = spot
         self.rate = rate
@@ -78,6 +81,7 @@ class BaseVolStrategy(ABC):
         self.maker_fee = maker_fee
         self.max_vega_notional = max_vega_notional
         self.max_delta_notional = max_delta_notional
+        self.chain = chain
 
         self.legs: list[OptionLeg] = []
         self.hedge_qty: float = 0.0
@@ -160,6 +164,31 @@ class BaseVolStrategy(ABC):
         self.realized_pnl += pnl
         self.pnl.transaction_costs -= fee
         logger.info("leg_closed", extra={"pnl": pnl, "K": leg.strike})
+        return pnl
+
+    def partial_close_leg(self, idx: int, close_qty: float, exit_price: float, use_maker: bool = False) -> float:
+        # trims a leg's size instead of closing it outright, entry_price is untouched
+        # since it's a cost basis, only the closed slice realizes PnL
+        if idx >= len(self.legs):
+            raise IndexError(f"leg index {idx} out of range")
+
+        leg = self.legs[idx]
+        close_qty = min(abs(close_qty), abs(leg.qty))
+        if close_qty < 1e-10:
+            return 0.0
+        if close_qty >= abs(leg.qty) - 1e-10:
+            return self.remove_leg(idx, exit_price, use_maker)
+
+        sign   = 1.0 if leg.qty > 0 else -1.0
+        closed = sign * close_qty
+        fee_rate = self.maker_fee if use_maker else self.taker_fee
+        fee = close_qty * exit_price * abs(fee_rate)
+        pnl = closed * (exit_price - leg.entry_price) - fee
+
+        leg.qty -= closed
+        self.realized_pnl += pnl
+        self.pnl.transaction_costs -= fee
+        logger.info("leg_partial_closed", extra={"pnl": pnl, "K": leg.strike, "closed_qty": closed})
         return pnl
 
     def mark_to_market(self, sigma: float) -> float:
