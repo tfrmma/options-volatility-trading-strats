@@ -1,162 +1,46 @@
-# BSM pricer + greeks. Numba JIT throughout.
-# Keep this file pure, no I/O, no state, no imports that aren't math.
+# Real listed strikes aren't a continuous grid, exchanges list whatever they list,
+# usually tighter spacing near spot on weeklies than on LEAPS. The strategies used to
+# each carry their own copy of a "round to a fake grid" heuristic, this replaces that
+# with an actual chain lookup when one's available, and keeps the heuristic only as a
+# fallback for when there isn't one (quick sizing checks, synthetic backtests).
 
-import numpy as np
-from numba import njit, prange
-import warnings
-
-
-# can't use scipy.norm inside njit, so inline the CDF.
-# Abramowitz & Stegun 26.2.17, ~6 decimal places, good enough
-@njit(cache=True)
-def _norm_cdf(x: float) -> float:
-    t = 1.0 / (1.0 + 0.2316419 * abs(x))
-    poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-    cdf = 1.0 - (1.0 / np.sqrt(2.0 * np.pi)) * np.exp(-0.5 * x * x) * poly
-    return cdf if x >= 0.0 else 1.0 - cdf
+from dataclasses import dataclass
+from typing import Optional
 
 
-@njit(cache=True)
-def _norm_pdf(x: float) -> float:
-    return np.exp(-0.5 * x * x) / np.sqrt(2.0 * np.pi)
+@dataclass
+class OptionChain:
+    strikes_by_expiry: dict[float, list[float]]
+
+    def nearest_strike(self, expiry: float, target: float) -> float:
+        strikes = self.strikes_by_expiry.get(expiry)
+        if not strikes:
+            raise ValueError(f"no listed strikes for expiry {expiry}")
+        return min(strikes, key=lambda k: abs(k - target))
+
+    def expiries(self) -> list[float]:
+        return sorted(self.strikes_by_expiry.keys())
+
+    @classmethod
+    def from_records(cls, records: list[dict]) -> "OptionChain":
+        # records shaped like market_sim.generate_option_chain()'s output, or a real
+        # chain pulled from an exchange with the same {strike, expiry, ...} shape
+        by_expiry: dict[float, set] = {}
+        for r in records:
+            by_expiry.setdefault(r["expiry"], set()).add(r["strike"])
+        return cls(strikes_by_expiry={T: sorted(ks) for T, ks in by_expiry.items()})
 
 
-@njit(cache=True)
-def bsm_price(S: float, K: float, T: float, r: float, sigma: float, is_call: bool) -> float:
-    if T <= 0.0 or sigma <= 0.0:
-        intrinsic = max(S - K, 0.0) if is_call else max(K - S, 0.0)
-        return intrinsic
-
-    sqrt_T = np.sqrt(T)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
-    d2 = d1 - sigma * sqrt_T
-
-    if is_call:
-        return S * _norm_cdf(d1) - K * np.exp(-r * T) * _norm_cdf(d2)
-    else:
-        return K * np.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+def round_to_synthetic_grid(spot: float) -> float:
+    # NOT what you want against a live book, this is a last resort for when there's no
+    # real chain to snap to at all
+    if spot < 1000:   return round(spot / 5) * 5.0
+    if spot < 10000:  return round(spot / 50) * 50.0
+    if spot < 100000: return round(spot / 500) * 500.0
+    return round(spot / 1000) * 1000.0
 
 
-@njit(cache=True)
-def bsm_greeks(S: float, K: float, T: float, r: float, sigma: float, is_call: bool):
-    # returns (delta, gamma, vega, theta, rho), vega/theta are per-unit, not per pct point
-    if T <= 1e-10 or sigma <= 1e-10:
-        delta = 1.0 if (is_call and S > K) else (-1.0 if (not is_call and S < K) else 0.0)
-        return delta, 0.0, 0.0, 0.0, 0.0
-
-    sqrt_T = np.sqrt(T)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
-    d2 = d1 - sigma * sqrt_T
-
-    Nd1 = _norm_cdf(d1)
-    Nd2 = _norm_cdf(d2)
-    nd1 = _norm_pdf(d1)
-    disc = np.exp(-r * T)
-
-    gamma = nd1 / (S * sigma * sqrt_T)
-    vega  = S * nd1 * sqrt_T
-
-    if is_call:
-        delta = Nd1
-        theta = (-(S * nd1 * sigma) / (2.0 * sqrt_T) - r * K * disc * Nd2) / 365.0
-        rho   = K * T * disc * Nd2 / 100.0
-    else:
-        delta = Nd1 - 1.0
-        theta = (-(S * nd1 * sigma) / (2.0 * sqrt_T) + r * K * disc * _norm_cdf(-d2)) / 365.0
-        rho   = -K * T * disc * _norm_cdf(-d2) / 100.0
-
-    return delta, gamma, vega, theta, rho
-
-
-@njit(parallel=True, cache=True)
-def batch_price(S_arr, K_arr, T_arr, r_arr, sigma_arr, is_call_arr):
-    n = len(S_arr)
-    prices = np.empty(n)
-    for i in prange(n):
-        prices[i] = bsm_price(S_arr[i], K_arr[i], T_arr[i], r_arr[i], sigma_arr[i], is_call_arr[i])
-    return prices
-
-
-@njit(parallel=True, cache=True)
-def batch_greeks(S_arr, K_arr, T_arr, r_arr, sigma_arr, is_call_arr):
-    n = len(S_arr)
-    delta = np.empty(n)
-    gamma = np.empty(n)
-    vega  = np.empty(n)
-    theta = np.empty(n)
-    rho   = np.empty(n)
-
-    for i in prange(n):
-        d, g, v, t, r = bsm_greeks(
-            S_arr[i], K_arr[i], T_arr[i], r_arr[i], sigma_arr[i], is_call_arr[i]
-        )
-        delta[i] = d
-        gamma[i] = g
-        vega[i]  = v
-        theta[i] = t
-        rho[i]   = r
-
-    return delta, gamma, vega, theta, rho
-
-
-def implied_vol(
-    market_price: float,
-    S: float,
-    K: float,
-    T: float,
-    r: float,
-    is_call: bool,
-    tol: float = 1e-6,
-    max_iter: int = 100,
-) -> float:
-    if T <= 0 or market_price <= 0:
-        return np.nan
-
-    intrinsic = max(S - K, 0.0) if is_call else max(K - S, 0.0)
-    if market_price < intrinsic - 1e-8:
-        return np.nan  # arb violation in input, garbage in nan out
-
-    sigma = 0.3  # decent starting guess for crypto, tune if you're doing rates
-    for _ in range(max_iter):
-        price = bsm_price(S, K, T, r, sigma, is_call)
-        _, _, vega, _, _ = bsm_greeks(S, K, T, r, sigma, is_call)
-
-        diff = price - market_price
-        if abs(diff) < tol:
-            return sigma
-
-        if abs(vega) < 1e-12:
-            break  # vega collapsed, NR is useless here, fall through to bisection
-
-        sigma -= diff / vega
-        if sigma <= 0:
-            sigma = 1e-4
-
-    # bisection fallback, ugly but guaranteed to converge
-    lo, hi = 1e-4, 10.0
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        if bsm_price(S, K, T, r, mid, is_call) > market_price:
-            hi = mid
-        else:
-            lo = mid
-        if hi - lo < tol:
-            return mid
-
-    warnings.warn(f"IV solver didn't converge: S={S:.2f} K={K:.2f} T={T:.4f}")
-    return np.nan
-
-
-def implied_vol_chain(
-    market_prices: np.ndarray,
-    S: float,
-    K_arr: np.ndarray,
-    T_arr: np.ndarray,
-    r: float,
-    is_call_arr: np.ndarray,
-) -> np.ndarray:
-    # TODO: cython this when chain sizes get large enough to matter
-    return np.array([
-        implied_vol(mp, S, k, t, r, ic)
-        for mp, k, t, ic in zip(market_prices, K_arr, T_arr, is_call_arr)
-    ])
+def target_strike(target: float, expiry: float, chain: Optional[OptionChain]) -> float:
+    if chain is not None:
+        return chain.nearest_strike(expiry, target)
+    return round_to_synthetic_grid(target)
