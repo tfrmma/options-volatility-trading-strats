@@ -13,6 +13,10 @@ from scipy.optimize import minimize
 from core.pricer import implied_vol_chain
 
 
+def _svi_total_variance(a: float, b: float, rho: float, m: float, sigma: float, k: np.ndarray) -> np.ndarray:
+    return a + b * (rho * (k - m) + np.sqrt((k - m) ** 2 + sigma ** 2))
+
+
 @dataclass
 class SVIParams:
     # w(k) = a + b*(rho*(k-m) + sqrt((k-m)^2 + sigma^2))
@@ -24,8 +28,7 @@ class SVIParams:
     expiry: float = 0.0
 
     def total_variance(self, log_moneyness: np.ndarray) -> np.ndarray:
-        k = log_moneyness
-        return self.a + self.b * (self.rho * (k - self.m) + np.sqrt((k - self.m)**2 + self.sigma**2))
+        return _svi_total_variance(self.a, self.b, self.rho, self.m, self.sigma, log_moneyness)
 
     def implied_vol(self, log_moneyness: np.ndarray) -> np.ndarray:
         w = np.maximum(self.total_variance(log_moneyness), 1e-10)
@@ -75,12 +78,12 @@ class VolSurface:
 
 def _svi_objective(params: np.ndarray, k: np.ndarray, market_w: np.ndarray) -> float:
     a, b, rho, m, sigma = params
-    w = a + b * (rho * (k - m) + np.sqrt((k - m)**2 + sigma**2))
+    w = _svi_total_variance(a, b, rho, m, sigma, k)
     return float(np.mean((w - market_w)**2))
 
 
 def _svi_constraints(params: np.ndarray) -> list:
-    # Gatheral no-butterfly conditions. necessary, not jointly sufficient across slices
+    # Gatheral no-butterfly conditions, necessary within a slice
     return [
         {'type': 'ineq', 'fun': lambda p: p[1]},
         {'type': 'ineq', 'fun': lambda p: p[4] - 1e-6},
@@ -89,11 +92,25 @@ def _svi_constraints(params: np.ndarray) -> list:
     ]
 
 
+def _calendar_constraint(prev_slice: SVIParams, ks: np.ndarray) -> dict:
+    # w_this(k) >= w_prev(k) at every point on the grid, this is what turns calendar
+    # arb from a post-hoc warning into something the optimizer actually has to respect
+    prev_w = prev_slice.total_variance(ks)
+
+    def fn(p: np.ndarray) -> np.ndarray:
+        a, b, rho, m, sigma = p
+        return _svi_total_variance(a, b, rho, m, sigma, ks) - prev_w
+
+    return {'type': 'ineq', 'fun': fn}
+
+
 def fit_svi_slice(
     log_moneyness: np.ndarray,
     market_total_var: np.ndarray,
     expiry: float,
     n_restarts: int = 5,
+    prev_slice: Optional[SVIParams] = None,
+    calendar_check_ks: Optional[np.ndarray] = None,
 ) -> SVIParams:
     # multiple restarts because this landscape will absolutely eat a single-start solver
     k = log_moneyness
@@ -110,12 +127,15 @@ def fit_svi_slice(
 
     bounds = [(-1.0, 2.0), (0.0, 2.0), (-0.999, 0.999), (-2.0, 2.0), (1e-5, 2.0)]
 
+    calendar_ks = calendar_check_ks if calendar_check_ks is not None else np.linspace(-1.0, 1.0, 21)
+    extra_constraints = [_calendar_constraint(prev_slice, calendar_ks)] if prev_slice is not None else []
+
     for x0 in init_candidates[:n_restarts]:
         try:
             res = minimize(
                 _svi_objective, x0, args=(k, w),
                 method='SLSQP', bounds=bounds,
-                constraints=_svi_constraints(np.array(x0)),
+                constraints=_svi_constraints(np.array(x0)) + extra_constraints,
                 options={'ftol': 1e-12, 'maxiter': 1000},
             )
             if res.success and res.fun < best_loss:
@@ -125,10 +145,15 @@ def fit_svi_slice(
             continue
 
     if best_result is None:
-        # calibration totally failed, return flat surface and scream about it
+        # calibration totally failed (possibly because the calendar constraint made the
+        # feasible region empty, real market data can genuinely do this), fall back to
+        # flat, but don't let the fallback itself violate the floor it was fighting for
         warnings.warn(f"SVI calibration failed for T={expiry:.4f}, falling back to flat")
-        atm_vol = float(np.mean(np.sqrt(w / max(expiry, 1e-10))))
-        return SVIParams(a=atm_vol**2 * expiry, b=0.01, rho=0.0, m=0.0, sigma=0.1, expiry=expiry)
+        a_fallback = float(np.mean(w))
+        if prev_slice is not None:
+            floor = float(prev_slice.total_variance(np.array([0.0]))[0])
+            a_fallback = max(a_fallback, floor + 1e-6)
+        return SVIParams(a=a_fallback, b=0.01, rho=0.0, m=0.0, sigma=0.1, expiry=expiry)
 
     a, b, rho, m, sigma = best_result
     params = SVIParams(a=a, b=b, rho=rho, m=m, sigma=sigma, expiry=expiry)
@@ -147,7 +172,14 @@ def calibrate_surface(chain_df) -> VolSurface:
     S = chain_df["spot"][0]
     r = chain_df["rate"][0]
 
-    for expiry, slice_df in chain_df.group_by("expiry"):
+    # fit shortest expiry first and constrain each subsequent slice against the previous
+    # one's already-fitted (fixed) total variance curve, groupby order isn't guaranteed
+    # sorted, and the whole point of the chaining is that order matters here.
+    # NOTE: polars group_by yields (key_tuple, df) pairs, not (key, df), even for a
+    # single group-by column, hence the (expiry,) unpacking below
+    groups = sorted(chain_df.group_by("expiry"), key=lambda pair: float(pair[0][0]))
+
+    for (expiry,), slice_df in groups:
         T = float(expiry)
         if T <= 0:
             continue
@@ -168,18 +200,21 @@ def calibrate_surface(chain_df) -> VolSurface:
         log_k     = np.log(K_arr[valid] / S)
         total_var = (ivs[valid]**2) * T
 
-        surface.add_slice(fit_svi_slice(log_k, total_var, T))
+        prev_slice = surface.slices[-1] if surface.slices else None
+        surface.add_slice(fit_svi_slice(log_k, total_var, T, prev_slice=prev_slice))
 
     surface.slices.sort(key=lambda s: s.expiry)
     surface.expiries = np.array([s.expiry for s in surface.slices])
 
-    _check_calendar_arb(surface)
+    _check_calendar_arb(surface)  # verification pass, the fit above should already satisfy this
     return surface
 
 
 def _check_calendar_arb(surface: VolSurface) -> None:
-    # TODO: enforce this properly during joint calibration instead of just warning
-    # right now it's basically a loud post-hoc sanity check
+    # verification pass. fit_svi_slice already enforces this during fitting via
+    # _calendar_constraint, this should normally find nothing, it stays as a safety net
+    # for the flat-fallback path and for surfaces built by hand rather than through
+    # calibrate_surface
     test_ks = np.linspace(-1.0, 1.0, 21)
 
     for i in range(len(surface.slices) - 1):
