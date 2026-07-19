@@ -12,13 +12,11 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SYMBOL = "underlying"  # single-underlying feeds don't need to tag every row
+
 
 @dataclass
 class MarketSnapshot:
-    # TODO: spot/bid/ask here are single-underlying. dispersion has an index book plus
-    # N component books each on a different underlying, this snapshot shape can't carry
-    # that. Backtesting dispersion end to end through this engine needs a bigger change
-    # than the per-instrument quote cache below, not attempted here.
     timestamp: float
     spot: float
     sigma: float
@@ -29,6 +27,7 @@ class MarketSnapshot:
     is_call: bool
     option_bid: float
     option_ask: float
+    symbol: str = _DEFAULT_SYMBOL  # which underlying this tick belongs to
 
 
 @dataclass
@@ -38,6 +37,7 @@ class Fill:
     qty: float
     price: float
     is_option: bool
+    symbol: str = _DEFAULT_SYMBOL
     strike: Optional[float] = None
     expiry: Optional[float] = None
     is_call: Optional[bool] = None
@@ -100,6 +100,12 @@ class BacktestResult:
 
 
 class BacktestEngine:
+    # positions and quote caches are keyed by symbol (spot side) or (symbol, strike,
+    # expiry, is_call) (option side), not just by instrument. a feed that never sets
+    # `symbol` on its rows behaves exactly as before, everything defaults to one shared
+    # "underlying" bucket. a feed that does set it (index + N components ticking through
+    # the same DataFrame) gets each one tracked and marked independently, which is what
+    # dispersion needs to be backtested end to end instead of just unit-tested in isolation.
 
     def __init__(
         self,
@@ -118,29 +124,36 @@ class BacktestEngine:
         self._cash = initial_capital
         self._option_positions: dict[tuple, float] = {}
         self._last_option_quotes: dict[tuple, tuple[float, float]] = {}
-        self._spot_position: float = 0.0
+        self._spot_positions: dict[str, float] = {}
+        self._last_spot_mark: dict[str, float] = {}
+        self._last_underlying_quotes: dict[str, tuple[float, float]] = {}
 
     def run(self, data: pl.DataFrame, strategy_fn: Callable, verbose: bool = False) -> BacktestResult:
         self.result = BacktestResult()
         self._cash = self.initial_capital
         self._option_positions = {}
         self._last_option_quotes = {}
-        self._spot_position = 0.0
+        self._spot_positions = {}
+        self._last_spot_mark = {}
+        self._last_underlying_quotes = {}
 
         for row in data.iter_rows(named=True):
             snap = self._parse_row(row)
             if snap is None:
                 continue
 
-            # cache this instrument's quote before filling/marking, _fill and _mtm both
-            # read from here so every instrument gets marked at its own last known quote,
-            # not whatever instrument happens to be ticking on the current row
-            self._last_option_quotes[(snap.strike, snap.expiry, snap.is_call)] = (snap.option_bid, snap.option_ask)
+            # cache this tick before filling/marking, _fill and _mtm both read from here
+            # so every symbol/instrument gets marked at its own last known quote, not
+            # whatever happens to be ticking on the current row
+            self._last_option_quotes[(snap.symbol, snap.strike, snap.expiry, snap.is_call)] = \
+                (snap.option_bid, snap.option_ask)
+            self._last_underlying_quotes[snap.symbol] = (snap.bid, snap.ask)
+            self._last_spot_mark[snap.symbol] = snap.spot
 
             for order in (strategy_fn(snap, self) or []):
                 self._fill(order, snap)
 
-            equity = self._cash + self._mtm(snap)
+            equity = self._cash + self._mtm()
             self.result.equity_curve.append((snap.timestamp, equity))
             self.result.pnl_series.append(equity - self.initial_capital)
 
@@ -153,9 +166,10 @@ class BacktestEngine:
         is_option = order["type"] == "option"
         side      = order["side"]
         qty       = abs(order["qty"])
+        symbol    = order.get("symbol", _DEFAULT_SYMBOL)
 
         if is_option:
-            key = (order["strike"], order["expiry"], order["is_call"])
+            key = (symbol, order["strike"], order["expiry"], order["is_call"])
             quote = self._last_option_quotes.get(key)
             if quote is None:
                 # can't fill an instrument we've never seen a quote for, shouldn't happen
@@ -173,27 +187,42 @@ class BacktestEngine:
             self._option_positions[key] = self._option_positions.get(key, 0.0) + signed
             self._cash -= signed * price + fee
 
-            fill = Fill(snap.timestamp, side, signed, price, True,
+            fill = Fill(snap.timestamp, side, signed, price, True, symbol,
                         order["strike"], order["expiry"], order["is_call"], fee)
         else:
-            raw   = snap.ask if side == "buy" else snap.bid
+            quote = self._last_underlying_quotes.get(symbol)
+            if quote is None:
+                logger.warning(f"no underlying quote cached for {symbol}, skipping fill")
+                return None
+
+            bid, ask = quote
+            raw   = ask if side == "buy" else bid
             sign  = 1 if side == "buy" else -1
             price = raw + sign * self.slippage_fn(raw, qty)
             fee   = qty * price * self.taker_fee
             signed = sign * qty
 
-            self._spot_position += signed
+            self._spot_positions[symbol] = self._spot_positions.get(symbol, 0.0) + signed
             self._cash -= signed * price + fee
-            fill = Fill(snap.timestamp, side, signed, price, False, fee=fee)
+            fill = Fill(snap.timestamp, side, signed, price, False, symbol, fee=fee)
 
         self.result.fills.append(fill)
         return fill
 
-    def _mtm(self, snap: MarketSnapshot) -> float:
-        # each open position is marked at the last quote actually observed for THAT
-        # instrument, not the current tick's quote applied across the board, fixes a
-        # real bug where multi-leg books (straddles, dispersion) got marked wrong
-        mtm = self._spot_position * snap.spot
+    def _mtm(self) -> float:
+        # every open position, spot or option, on every symbol touched so far, marked at
+        # its own last observed quote. no snap argument needed, run() already refreshed
+        # the caches for the current tick's symbol before calling this.
+        mtm = 0.0
+        for symbol, qty in self._spot_positions.items():
+            if abs(qty) < 1e-10:
+                continue
+            mark = self._last_spot_mark.get(symbol)
+            if mark is None:
+                logger.warning(f"no spot mark cached for {symbol}, marking at 0")
+                continue
+            mtm += qty * mark
+
         for key, qty in self._option_positions.items():
             if abs(qty) < 1e-10:
                 continue
@@ -208,10 +237,18 @@ class BacktestEngine:
     @staticmethod
     def _parse_row(row: dict) -> Optional[MarketSnapshot]:
         try:
-            return MarketSnapshot(**{k: row[k] for k in MarketSnapshot.__dataclass_fields__})
-        except (KeyError, TypeError) as e:
+            # only pull fields that are actually present, missing optional ones (symbol,
+            # on a feed that predates it) fall back to their dataclass default instead
+            # of blowing up the whole row
+            kwargs = {k: row[k] for k in MarketSnapshot.__dataclass_fields__ if k in row}
+            return MarketSnapshot(**kwargs)
+        except TypeError as e:
             logger.warning(f"bad row, skipping: {e}")
             return None
 
     def current_position(self) -> dict:
-        return {"spot": self._spot_position, "options": dict(self._option_positions), "cash": self._cash}
+        return {
+            "spot":    dict(self._spot_positions),
+            "options": dict(self._option_positions),
+            "cash":    self._cash,
+        }
