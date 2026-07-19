@@ -77,7 +77,9 @@ vol mechanically every time IV > RV.
 Sells index vol, buys vega-weighted component vol, on the thesis that implied correlation is
 structurally too high because index puts get bid up as macro hedges. This does not like tail
 events, correlation goes to 1 exactly when you don't want it to, so it's sized conservatively
-relative to the other strategies.
+relative to the other strategies. Unlike the other three, `DispersionStrategy` does not inherit
+`BaseVolStrategy`, it composes one `UnderlyingBook` per underlying (index + each component) so
+every leg prices, greeks, and hedges off its own spot instead of a single shared one.
 
 ### `surface_trading` — skew and calendar RV
 Trades dislocations in the surface itself: calendar spreads (sell rich near-term variance, buy
@@ -142,23 +144,23 @@ pytest tests/ -v
 put-call parity, IV solver round-trip accuracy, batch pricer consistency with the scalar path,
 and SVI fit convergence against synthetic noisy data.
 
-`tests/test_strategies.py` covers the specific strategy-layer bugs fixed in this pass: hedge
-PnL accounting in `mark_to_market()`, no double-booking on `_close_all`/`_flatten`, and
-`surface_trading`'s delta-targeted strike search converging correctly for both calls and puts.
-The backtest engine and margin calculator still have no coverage, see Known Limitations.
+`tests/test_strategies.py` covers the mark_to_market/close-double-count/put-strike-search bugs
+fixed in the strategy layer. `tests/test_dispersion.py` covers the composition redesign
+(components price off their own spot, hedge independently, aggregate correctly).
+`tests/test_engine.py` covers the per-instrument quote cache and sharpe annualization fixes.
+`tests/test_margin_calculator.py` covers the portfolio margin scenario grid and liquidation
+thresholds.
 
 ## Known limitations
 
-- **Backtest engine and margin calculator are untested.** `tests/test_strategies.py` covers
-  the specific PnL-accounting and strike-search bugs fixed in the strategy layer, but
-  `backtest/engine.py`'s fill/mark logic and `backtest/margin_calculator.py` have no automated
-  coverage yet.
-- **`BaseVolStrategy` assumes a single underlying.** `delta_neutral`, `vol_arb`, and
-  `surface_trading` are single-underlying by construction and fit this fine. `dispersion` holds
-  positions across an index and multiple components, each with its own spot, which doesn't fit
-  cleanly into a base class built around one `self.spot`. Not yet fixed, needs a design call on
-  whether to extend `OptionLeg`/`BaseVolStrategy` with per-leg underlyings or give dispersion
-  its own multi-underlying engine.
+- **Backtest engine's multi-underlying support is still single-spot.** `MarketSnapshot` and
+  `BacktestEngine._spot_position` carry one spot for the whole book. The per-instrument quote
+  cache fix means multi-leg *options* (straddles, dispersion's option legs) now mark correctly,
+  but replaying `dispersion` end-to-end through `BacktestEngine` (index spot + N component
+  spots simultaneously) needs a bigger change than that, not attempted here.
+- **`market_sim.py` (fill-side execution modeling) has no test coverage.** `engine.py` and
+  `margin_calculator.py` now have regression tests (`tests/test_engine.py`,
+  `tests/test_margin_calculator.py`), the synthetic GARCH/jump price generator doesn't.
 - **Synthetic data only, no exchange connectivity for execution.** `market_sim.py` and
   `data/websocket_client.py` cover feed simulation and read-only market data. There's no order
   placement, no OMS, no risk gateway. This is a research/backtesting codebase, not a trading
@@ -174,4 +176,4 @@ The backtest engine and margin calculator still have no coverage, see Known Limi
 
 ## License
 
-MIT, see `LICENSE`.
+MIT
