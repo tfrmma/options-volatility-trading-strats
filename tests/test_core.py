@@ -3,7 +3,7 @@
 
 import pytest
 import numpy as np
-from core.pricer import bsm_price, bsm_greeks, implied_vol, batch_price, batch_greeks
+from core.pricer import bsm_price, bsm_greeks, implied_vol, batch_price, batch_greeks, implied_vol_chain
 from core.estimators import yang_zhang, garman_klass, close_to_close, realized_kernel
 from core.surface import SVIParams, fit_svi_slice
 
@@ -101,6 +101,61 @@ class TestBatchPricer:
         batch  = batch_price(S, K, T, r, sigma, ic)
         scalar = np.array([bsm_price(S[i], K[i], T[i], r[i], sigma[i], True) for i in range(n)])
         np.testing.assert_allclose(batch, scalar, rtol=1e-6)
+
+
+class TestBatchImpliedVol:
+
+    def test_batch_matches_scalar_round_trip(self):
+        S, r = 50_000.0, 0.0
+        K_arr = np.linspace(40_000, 60_000, 15)
+        T_arr = np.full(15, 30 / 365)
+        ic_arr = np.array([True] * 8 + [False] * 7)
+        sigma_true = np.full(15, 0.7)
+
+        prices = np.array([
+            bsm_price(S, K_arr[i], T_arr[i], r, sigma_true[i], ic_arr[i]) for i in range(15)
+        ])
+        batch = implied_vol_chain(prices, S, K_arr, T_arr, r, ic_arr)
+        scalar = np.array([
+            implied_vol(prices[i], S, K_arr[i], T_arr[i], r, ic_arr[i]) for i in range(15)
+        ])
+        np.testing.assert_allclose(batch, sigma_true, atol=1e-4)
+        np.testing.assert_allclose(batch, scalar, atol=1e-6)
+
+    def test_invalid_points_come_back_nan_not_a_crash(self):
+        S, r = 100.0, 0.0
+        K_arr = np.array([100.0, 100.0, 100.0])
+        T_arr = np.array([0.5, 0.0, 0.5])       # middle one has zero time, must nan out
+        ic_arr = np.array([True, True, True])
+        prices = np.array([10.0, 5.0, -1.0])    # last one is a negative price, must nan out
+
+        result = implied_vol_chain(prices, S, K_arr, T_arr, r, ic_arr)
+        assert not np.isnan(result[0])
+        assert np.isnan(result[1])
+        assert np.isnan(result[2])
+
+    def test_large_batch_runs_and_recovers_known_vols(self):
+        # big enough that the parallel path actually kicks in, not just a correctness
+        # check but a "doesn't blow up under prange" check. T and moneyness kept away
+        # from the vega-collapse regime (very short-dated + deep ITM), where price is
+        # genuinely insensitive to vol and IV isn't identifiable by either solver, that's
+        # not a batch-vs-scalar bug, it's the same for both, see TestImpliedVol
+        n = 2000
+        rng = np.random.default_rng(0)
+        S = 50_000.0
+        K_arr = rng.uniform(40_000, 60_000, n)
+        T_arr = rng.uniform(0.1, 1.0, n)
+        ic_arr = rng.random(n) > 0.5
+        sigma_true = rng.uniform(0.3, 1.2, n)
+
+        prices = np.array([
+            bsm_price(S, K_arr[i], T_arr[i], 0.0, sigma_true[i], ic_arr[i]) for i in range(n)
+        ])
+        recovered = implied_vol_chain(prices, S, K_arr, T_arr, 0.0, ic_arr)
+
+        valid = ~np.isnan(recovered)
+        assert valid.sum() > n * 0.95   # deep OTM points can legitimately fail, most shouldn't
+        np.testing.assert_allclose(recovered[valid], sigma_true[valid], atol=1e-3)
 
 
 # ── Estimators ────────────────────────────────────────────────────────────────
