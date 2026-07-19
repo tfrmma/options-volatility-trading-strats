@@ -61,12 +61,14 @@ class DispersionStrategy:
         vega_notional_index: float = 50000.0,
         index_chain: Optional[OptionChain] = None,
         component_chains: Optional[dict[str, OptionChain]] = None,
+        index_symbol: str = "index",
         **book_kwargs,
     ):
         self.rate = rate
         self.components_spec = {c.symbol: c for c in components}
         self.corr_premium_threshold = corr_premium_threshold
         self.vega_notional_index = vega_notional_index
+        self.index_symbol = index_symbol
         component_chains = component_chains or {}
 
         self.index_book = UnderlyingBook(spot=index_spot, rate=rate, chain=index_chain, **book_kwargs)
@@ -202,6 +204,19 @@ class DispersionStrategy:
             "premium": metrics.correlation_premium,
         })
         return [{"action": "enter_dispersion", "expiry": expiry, "metrics": metrics}]
+
+    def _book_for(self, symbol: str) -> UnderlyingBook:
+        return self.index_book if symbol == self.index_symbol else self.component_books[symbol]
+
+    def record_fill(self, symbol: str, strike: float, expiry: float, is_call: bool,
+                     qty: float, price: float) -> None:
+        # lets an execution layer (BacktestEngine's adapter, eventually a real OMS)
+        # tell this strategy what actually got filled, instead of the strategy's own
+        # methods assuming their theoretical bsm_price fills. keeps entry/hedge sizing
+        # logic in enter_dispersion/hedge_delta as the single source of truth for WHAT
+        # to trade, while letting the caller correct WHAT PRICE it traded at.
+        self._book_for(symbol).add_leg(OptionLeg(strike=strike, expiry=expiry, is_call=is_call,
+                                                  qty=qty, entry_price=price))
 
     def enter_dispersion(self, expiry: float, metrics: DispersionMetrics, sigma_index: float) -> None:
         # sell index straddle, buy component straddles vega-weighted
