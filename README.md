@@ -82,7 +82,11 @@ structurally too high because index puts get bid up as macro hedges. This does n
 events, correlation goes to 1 exactly when you don't want it to, so it's sized conservatively
 relative to the other strategies. Unlike the other three, `DispersionStrategy` does not inherit
 `BaseVolStrategy`, it composes one `UnderlyingBook` per underlying (index + each component) so
-every leg prices, greeks, and hedges off its own spot instead of a single shared one.
+every leg prices, greeks, and hedges off its own spot instead of a single shared one. It's the
+one strategy actually wired end to end through `BacktestEngine`, via
+`backtest/dispersion_adapter.py` and `backtest/market_sim.py::simulate_dispersion_feed()`; the
+other three are unit-tested against their own theoretical fills but don't have an engine adapter
+yet.
 
 ### `surface_trading` — skew and calendar RV
 Trades dislocations in the surface itself: calendar spreads (sell rich near-term variance, buy
@@ -168,27 +172,41 @@ thresholds. `tests/test_market_sim.py` covers the GARCH/jump price generator and
 option chain builder. `tests/test_chain.py` covers real-chain strike snapping vs the synthetic
 grid fallback. `tests/test_svi_calendar.py` covers the calendar-arb constraint actually
 rejecting violations an unconstrained fit would allow, and the sequential fitting order.
+`tests/test_dispersion_adapter.py` runs `DispersionStrategy` through `BacktestEngine` end to
+end via `DispersionBacktestAdapter`: real fills tagged by symbol, an equity curve driven by
+those fills, and confirmation that a strategy that never wants to enter never trades.
 
 ## Known limitations
 
-- **`BacktestEngine` tracks positions per symbol, but nothing yet drives a real multi-symbol
-  feed through it end to end.** Spot and option positions are keyed by `symbol` and each gets
-  marked at its own last observed quote (`tests/test_engine.py::TestMultiUnderlying` covers
-  this directly: an index and a component ticking through the same feed track and mark
-  independently). What's still missing is the glue: a data feed shaped like "index + N
-  components, interleaved" and a `strategy_fn` adapter that turns `DispersionStrategy`'s
-  signals into tagged orders. `DispersionStrategy` itself is composition-based and already
-  correct in isolation (see `tests/test_dispersion.py`), it just isn't wired into
-  `BacktestEngine` yet.
 - **Synthetic data only, no exchange connectivity for execution.** `market_sim.py` and
   `data/websocket_client.py` cover feed simulation and read-only market data. There's no order
   placement, no OMS, no risk gateway. This is a research/backtesting codebase, not a trading
-  system.
+  system, and turning it into one is a different project, not a gap in this one.
+- **`DispersionBacktestAdapter`'s realized-vol input is a scaled proxy of the simulated implied
+  vol, not a real trailing estimator.** Fine for proving the engine wiring works end to end
+  (`tests/test_dispersion_adapter.py`), not fine for an actual backtest of the correlation
+  signal, that needs `core/estimators.py`'s real estimators fed real historical returns per
+  component, same caveat `compute_implied_correlation`'s own realized-correlation proxy already
+  carries as a TODO in `dispersion.py`.
+- **The delta hedge in `DispersionBacktestAdapter` stays on `BaseVolStrategy`'s existing
+  theoretical-spot `hedge_delta()`,** it isn't routed through real engine spot fills the way
+  the option legs are. Proving the options wiring was the point of this pass; hedge execution
+  realism is a smaller, separate improvement on top.
 
 ## Roadmap
 
 Everything that was here (joint SVI calendar-arb calibration, vol_arb vega rebalancing, real
-chain strikes, and a batch IV solver) is done.
+chain strikes, a batch IV solver, and wiring `dispersion` into `BacktestEngine` end to end) is
+done, see `CODE_REVIEW_STATUS.md` for what changed and where. Still open:
+
+- Give `delta_neutral`, `vol_arb`, and `surface_trading` the same kind of engine adapter
+  `dispersion` now has, they're unit-tested against their own theoretical fills but, unlike
+  `dispersion`, don't have a `strategy_fn` bridge to `BacktestEngine` yet
+- A real trailing realized-vol estimator (`core/estimators.py` fed actual historical returns
+  per component) instead of `DispersionBacktestAdapter`'s scaled-implied-vol proxy, and route
+  its delta hedge through real engine spot fills instead of theoretical-spot `hedge_delta()`
+- `market_sim.py`'s fill-side execution modeling (spread widening, toxic flow) has correctness
+  tests now but hasn't been validated against real historical spread behavior
 
 ## License
 
