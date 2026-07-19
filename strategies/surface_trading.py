@@ -15,6 +15,7 @@ from typing import Optional
 from strategies.base_strat import BaseVolStrategy, OptionLeg
 from core.surface import VolSurface
 from core.pricer import bsm_price, bsm_greeks
+from core.chain import target_strike
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,10 @@ class VolSurfaceTrading(BaseVolStrategy):
         self, metrics: CalendarMetrics, sigma_near: float, sigma_far: float, sell_near: bool = True,
     ) -> None:
         # sell near (theta collect), buy back (vega hedge). vega-neutral at entry
-        strike    = self._round_strike(self.spot)
+        # both legs need the SAME strike (that's what makes it a calendar, not a
+        # diagonal), snapped off the near tenor's chain, real chains occasionally don't
+        # list the identical strike on both expiries, that mismatch isn't handled here
+        strike    = target_strike(self.spot, metrics.near_expiry, self.chain)
         near_sign = -1.0 if sell_near else 1.0
 
         near_v = self._straddle_vega(strike, metrics.near_expiry, sigma_near)
@@ -165,6 +169,12 @@ class VolSurfaceTrading(BaseVolStrategy):
         sigma_call: float,  sigma_put: float,
         sell_call: bool = True,
     ) -> None:
+        # call_strike/put_strike come from _find_delta_strike, a continuous search, snap
+        # to whatever's actually listed here at entry time. compute_skew_metrics stays
+        # continuous on purpose, that's measuring the surface, not placing an order.
+        call_strike = target_strike(call_strike, expiry, self.chain)
+        put_strike  = target_strike(put_strike, expiry, self.chain)
+
         c_sign = -1.0 if sell_call else 1.0
         p_sign = -c_sign
 
@@ -228,10 +238,3 @@ class VolSurfaceTrading(BaseVolStrategy):
     def _unit_vega(self, strike: float, expiry: float, sigma: float, is_call: bool) -> float:
         _, _, vega, _, _ = bsm_greeks(self.spot, strike, expiry, self.rate, sigma, is_call)
         return vega
-
-    @staticmethod
-    def _round_strike(spot: float) -> float:
-        if spot < 1000:   return round(spot / 5)   * 5.0
-        if spot < 10000:  return round(spot / 50)  * 50.0
-        if spot < 100000: return round(spot / 500) * 500.0
-        return            round(spot / 1000) * 1000.0
