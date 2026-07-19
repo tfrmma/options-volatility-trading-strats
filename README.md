@@ -71,7 +71,10 @@ vega-loss stop are what separate this from "sell strangles and hope."
 Systematic variance risk premium harvesting. Implied vol is persistently above realized on
 average, but the premium compresses, occasionally inverts, and goes haywire around macro
 events, so this trades the VRP z-score against its own trailing history rather than selling
-vol mechanically every time IV > RV.
+vol mechanically every time IV > RV. On a "hold" signal it doesn't just sit there re-hedging
+delta, it scales the existing position toward the new conviction-weighted vega target, trimming
+(partial close, realizing PnL on the closed slice) or adding at the same strikes, whichever the
+drift calls for, subject to a tolerance band so it isn't paying the spread on every small wobble.
 
 ### `dispersion` — implied correlation arb
 Sells index vol, buys vega-weighted component vol, on the thesis that implied correlation is
@@ -89,10 +92,14 @@ side effect.
 
 ## Design decisions and trade-offs
 
-**Numba over Cython for the pricer.** JIT compilation gets most of the speedup with a fraction
-of the build complexity. The batch pricer/greeks functions are `parallel=True` for chain-level
-computation; the scalar IV solver is not JIT'd because Newton-Raphson with a bisection fallback
-doesn't vectorize cleanly and isn't the hot path.
+**Numba over Cython for the pricer, including the batch IV solver.** JIT compilation gets most
+of the speedup with a fraction of the build complexity, no separate compiled-extension toolchain
+to maintain alongside the rest of the JIT'd math in this file. `implied_vol_chain()` is a
+`@njit(parallel=True)` batch Newton-Raphson-with-bisection-fallback solver for the same reason
+`batch_price`/`batch_greeks` are: chain sizes here are at most a few hundred points, not the
+kind of scale where Cython's extra control over memory layout would pay for its build cost. The
+scalar `implied_vol()` stays plain Python, it's not the hot path, `implied_vol_chain` is what
+actually gets called against a full chain.
 
 **Polars over pandas for tick data.** Pandas' row-oriented model and copy-heavy semantics start
 to hurt once you're past a few million rows of options ticks. Polars' lazy evaluation and
@@ -109,17 +116,23 @@ single-start SLSQP solver gets stuck in local minima often enough to matter. Fiv
 different initial skew/curvature guesses is a pragmatic middle ground between calibration
 quality and fit time; it is not a guarantee of the global optimum.
 
-**Butterfly arb enforced per-slice, calendar arb checked post-hoc.** `SVIParams.is_valid()`
-enforces the Gatheral no-butterfly condition within a single expiry slice during optimization.
-Calendar arbitrage across slices is checked after the fact with a warning, not enforced during
-fitting. Joint calibration with calendar constraints is more correct and is on the roadmap, it's
-a harder optimization problem and wasn't worth blocking on for the first pass.
+**Butterfly arb enforced per-slice, calendar arb enforced sequentially across slices.**
+`SVIParams.is_valid()` enforces the Gatheral no-butterfly condition within a single expiry
+slice during optimization. `calibrate_surface()` fits slices in increasing expiry order and
+passes each already-fitted slice into the next one's `fit_svi_slice()` call as a hard
+`w_this(k) >= w_prev(k)` inequality constraint over a strike grid, not a post-hoc check. This is
+sequential-constrained, not a single joint optimization over every slice's parameters at once,
+that's a bigger and messier optimization problem and this gets the actual guarantee (no
+calendar arb between consecutive tenors) without it. If a fit still fails outright (the
+constraint plus butterfly validity leaves no feasible region for genuinely arb-laden input
+data), it falls back to a flat slice pinned at or above the previous tenor's ATM level, not a
+silent violation.
 
-**Rounded strikes instead of actual listed strikes.** Strategies round to an approximate strike
-grid (`round(spot / step) * step`) rather than pulling the real listed chain. This is fine for
-strategy research and backtesting on synthetic data; it will produce strikes that don't exist
-on the actual exchange when running against real chain data. Flagged as a known gap, not fixed
-silently.
+**Real listed strikes when a chain is available, a synthetic grid when it isn't.** Every
+strategy takes an optional `chain: OptionChain` (or `index_chain`/`component_chains` for
+dispersion). `core/chain.py` snaps a target strike to the nearest one actually listed for that
+expiry; without a chain, it falls back to the old round-to-a-fake-grid heuristic, which is fine
+for synthetic backtests but not for real order placement.
 
 ## Install
 
@@ -145,22 +158,28 @@ put-call parity, IV solver round-trip accuracy, batch pricer consistency with th
 and SVI fit convergence against synthetic noisy data.
 
 `tests/test_strategies.py` covers the mark_to_market/close-double-count/put-strike-search bugs
-fixed in the strategy layer. `tests/test_dispersion.py` covers the composition redesign
-(components price off their own spot, hedge independently, aggregate correctly).
-`tests/test_engine.py` covers the per-instrument quote cache and sharpe annualization fixes.
+fixed in the strategy layer, plus `vol_arb`'s vega rebalancing (trim/add/no-op-within-tolerance).
+`tests/test_dispersion.py` covers the composition redesign (components price off their own
+spot, hedge independently, aggregate correctly). `tests/test_engine.py` covers the
+per-instrument quote cache, the sharpe annualization fix, and per-symbol position
+tracking/marking for multiple underlyings ticking through the same feed.
 `tests/test_margin_calculator.py` covers the portfolio margin scenario grid and liquidation
-thresholds.
+thresholds. `tests/test_market_sim.py` covers the GARCH/jump price generator and the synthetic
+option chain builder. `tests/test_chain.py` covers real-chain strike snapping vs the synthetic
+grid fallback. `tests/test_svi_calendar.py` covers the calendar-arb constraint actually
+rejecting violations an unconstrained fit would allow, and the sequential fitting order.
 
 ## Known limitations
 
-- **Backtest engine's multi-underlying support is still single-spot.** `MarketSnapshot` and
-  `BacktestEngine._spot_position` carry one spot for the whole book. The per-instrument quote
-  cache fix means multi-leg *options* (straddles, dispersion's option legs) now mark correctly,
-  but replaying `dispersion` end-to-end through `BacktestEngine` (index spot + N component
-  spots simultaneously) needs a bigger change than that, not attempted here.
-- **`market_sim.py` (fill-side execution modeling) has no test coverage.** `engine.py` and
-  `margin_calculator.py` now have regression tests (`tests/test_engine.py`,
-  `tests/test_margin_calculator.py`), the synthetic GARCH/jump price generator doesn't.
+- **`BacktestEngine` tracks positions per symbol, but nothing yet drives a real multi-symbol
+  feed through it end to end.** Spot and option positions are keyed by `symbol` and each gets
+  marked at its own last observed quote (`tests/test_engine.py::TestMultiUnderlying` covers
+  this directly: an index and a component ticking through the same feed track and mark
+  independently). What's still missing is the glue: a data feed shaped like "index + N
+  components, interleaved" and a `strategy_fn` adapter that turns `DispersionStrategy`'s
+  signals into tagged orders. `DispersionStrategy` itself is composition-based and already
+  correct in isolation (see `tests/test_dispersion.py`), it just isn't wired into
+  `BacktestEngine` yet.
 - **Synthetic data only, no exchange connectivity for execution.** `market_sim.py` and
   `data/websocket_client.py` cover feed simulation and read-only market data. There's no order
   placement, no OMS, no risk gateway. This is a research/backtesting codebase, not a trading
@@ -168,12 +187,9 @@ thresholds.
 
 ## Roadmap
 
-- Joint SVI calibration with calendar arbitrage enforced during fitting, not checked after
-- Partial close / incremental vega rebalancing in `vol_arb`'s hold state
-- Pull actual listed strikes from the chain instead of rounding to a synthetic grid
-- Strategy- and backtest-level test coverage
-- Cython (or better JIT coverage) for chain-level batch IV solving
+Everything that was here (joint SVI calendar-arb calibration, vol_arb vega rebalancing, real
+chain strikes, and a batch IV solver) is done.
 
 ## License
 
-MIT
+MIT, see `LICENSE`.
