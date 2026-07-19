@@ -88,3 +88,63 @@ class TestFindDeltaStrikeConverges:
         put_K  = strat._find_delta_strike(0.25, 0.25, atm_iv=0.3, is_call=False)
 
         assert put_K < strat.spot < call_K
+
+
+class TestVegaRebalancing:
+
+    def test_hold_trims_position_when_target_shrinks(self):
+        strat = VolArbStrategy(spot=100.0, taker_fee=0.0, maker_fee=0.0, vega_rebalance_tol=0.10)
+        from strategies.base_strat import OptionLeg
+        strat.legs.append(OptionLeg(strike=100.0, expiry=0.25, is_call=True,  qty=-10.0, entry_price=5.0))
+        strat.legs.append(OptionLeg(strike=100.0, expiry=0.25, is_call=False, qty=-10.0, entry_price=5.0))
+        strat._in_position = True
+
+        from strategies.vol_arb import VRPSignal, VRPMetrics
+        metrics = VRPMetrics(implied_vol=0.5, realized_vol=0.4, vrp=0.1, vrp_zscore=0.3, vrp_percentile=0.6)
+        # target vega notional deliberately far below current, should trigger a trim
+        current_vega_notional = abs(strat.portfolio_greeks(0.5).vega) * strat.spot
+        signal = VRPSignal("hold", 0.25, target_vega=current_vega_notional * 0.5, metrics=metrics, confidence=1.0)
+
+        strat.execute_signal(signal, sigma=0.5)
+
+        new_vega_notional = abs(strat.portfolio_greeks(0.5).vega) * strat.spot
+        assert new_vega_notional < current_vega_notional
+        assert new_vega_notional == pytest.approx(current_vega_notional * 0.5, rel=0.05)
+        assert strat.realized_pnl != 0.0  # trimming realizes PnL on the closed slice
+
+    def test_hold_adds_to_position_when_target_grows(self):
+        strat = VolArbStrategy(spot=100.0, taker_fee=0.0, maker_fee=0.0, vega_rebalance_tol=0.10)
+        from strategies.base_strat import OptionLeg
+        strat.legs.append(OptionLeg(strike=100.0, expiry=0.25, is_call=True,  qty=-10.0, entry_price=5.0))
+        strat.legs.append(OptionLeg(strike=100.0, expiry=0.25, is_call=False, qty=-10.0, entry_price=5.0))
+        strat._in_position = True
+
+        from strategies.vol_arb import VRPSignal, VRPMetrics
+        metrics = VRPMetrics(implied_vol=0.5, realized_vol=0.4, vrp=0.1, vrp_zscore=0.9, vrp_percentile=0.9)
+        current_vega_notional = abs(strat.portfolio_greeks(0.5).vega) * strat.spot
+        signal = VRPSignal("hold", 0.25, target_vega=current_vega_notional * 1.5, metrics=metrics, confidence=1.0)
+
+        n_legs_before = len(strat.legs)
+        strat.execute_signal(signal, sigma=0.5)
+
+        new_vega_notional = abs(strat.portfolio_greeks(0.5).vega) * strat.spot
+        assert new_vega_notional > current_vega_notional
+        assert len(strat.legs) > n_legs_before  # added new legs at the existing strikes
+
+    def test_small_drift_within_tolerance_does_not_trade(self):
+        strat = VolArbStrategy(spot=100.0, taker_fee=0.0, maker_fee=0.0, vega_rebalance_tol=0.50)
+        from strategies.base_strat import OptionLeg
+        strat.legs.append(OptionLeg(strike=100.0, expiry=0.25, is_call=True,  qty=-10.0, entry_price=5.0))
+        strat.legs.append(OptionLeg(strike=100.0, expiry=0.25, is_call=False, qty=-10.0, entry_price=5.0))
+        strat._in_position = True
+
+        from strategies.vol_arb import VRPSignal, VRPMetrics
+        metrics = VRPMetrics(implied_vol=0.5, realized_vol=0.4, vrp=0.1, vrp_zscore=0.3, vrp_percentile=0.6)
+        current_vega_notional = abs(strat.portfolio_greeks(0.5).vega) * strat.spot
+        # only a 10% drift, tolerance is 50%, should be a no-op
+        signal = VRPSignal("hold", 0.25, target_vega=current_vega_notional * 1.1, metrics=metrics, confidence=1.0)
+
+        n_legs_before = len(strat.legs)
+        strat.execute_signal(signal, sigma=0.5)
+        assert len(strat.legs) == n_legs_before
+        assert strat.realized_pnl == 0.0
