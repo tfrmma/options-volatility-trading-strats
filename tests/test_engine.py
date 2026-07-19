@@ -12,6 +12,73 @@ def make_row(ts, spot, sigma, bid, ask, expiry, strike, is_call, opt_bid, opt_as
     }
 
 
+class TestMultiUnderlying:
+
+    def test_option_positions_track_and_mark_independently_per_symbol(self):
+        # this is the scenario #11's fix didn't cover on its own: two DIFFERENT
+        # underlyings (not just two instruments on the same one) ticking through the
+        # same feed, needed to actually backtest dispersion rather than just the
+        # single-underlying strategies
+        engine = BacktestEngine(taker_fee=0.0, maker_fee=0.0, slippage_bps=0.0, initial_capital=0.0)
+        rows = [
+            {**make_row(0, 50000.0, 0.5, 49990.0, 50010.0, 0.25, 50000.0, True, 500.0, 520.0), "symbol": "BTC"},
+            {**make_row(1, 3000.0, 0.6, 2995.0, 3005.0, 0.25, 3000.0, True, 60.0, 62.0), "symbol": "ETH"},
+        ]
+        data = pl.DataFrame(rows)
+
+        def strategy_fn(snap, eng):
+            return [{"type": "option", "side": "buy", "qty": 1.0, "strike": snap.strike,
+                     "expiry": snap.expiry, "is_call": True, "symbol": snap.symbol}]
+
+        result = engine.run(data, strategy_fn)
+        pos = engine.current_position()["options"]
+        assert ("BTC", 50000.0, 0.25, True) in pos
+        assert ("ETH", 3000.0, 0.25, True) in pos
+
+        final_equity = result.equity_curve[-1][1]
+        cash_spent = -520.0 - 62.0                    # bought both legs at their own ask
+        btc_mtm = 0.5 * (500.0 + 520.0)                # marked at BTC's own quote
+        eth_mtm = 0.5 * (60.0 + 62.0)                  # marked at ETH's own quote, not BTC's
+        assert final_equity == pytest.approx(cash_spent + btc_mtm + eth_mtm)
+
+    def test_spot_positions_track_and_mark_independently_per_symbol(self):
+        engine = BacktestEngine(taker_fee=0.0, maker_fee=0.0, slippage_bps=0.0, initial_capital=0.0)
+        rows = [
+            {**make_row(0, 50000.0, 0.5, 49990.0, 50010.0, 0.25, 50000.0, True, 500.0, 520.0), "symbol": "BTC"},
+            {**make_row(1, 3000.0, 0.6, 2995.0, 3005.0, 0.25, 3000.0, True, 60.0, 62.0), "symbol": "ETH"},
+        ]
+        data = pl.DataFrame(rows)
+
+        def strategy_fn(snap, eng):
+            return [{"type": "spot", "side": "buy", "qty": 1.0, "symbol": snap.symbol}]
+
+        result = engine.run(data, strategy_fn)
+        spot_pos = engine.current_position()["spot"]
+        assert spot_pos["BTC"] == pytest.approx(1.0)
+        assert spot_pos["ETH"] == pytest.approx(1.0)
+
+        final_equity = result.equity_curve[-1][1]
+        cash_spent = -50010.0 - 3005.0   # bought at each symbol's own ask
+        btc_mtm = 50000.0                # marked at BTC's own spot mark
+        eth_mtm = 3000.0                 # marked at ETH's own spot mark, not BTC's
+        assert final_equity == pytest.approx(cash_spent + btc_mtm + eth_mtm)
+
+    def test_missing_symbol_column_defaults_to_single_underlying_behavior(self):
+        # feeds written before `symbol` existed shouldn't need touching
+        engine = BacktestEngine(taker_fee=0.0, maker_fee=0.0, slippage_bps=0.0, initial_capital=0.0)
+        rows = [make_row(0, 100.0, 0.5, 99.9, 100.1, 0.25, 100.0, True, 5.0, 5.2)]  # no "symbol" key
+        data = pl.DataFrame(rows)
+
+        seen_symbols = []
+
+        def strategy_fn(snap, eng):
+            seen_symbols.append(snap.symbol)
+            return []
+
+        engine.run(data, strategy_fn)
+        assert seen_symbols == ["underlying"]
+
+
 class TestMultiLegMarking:
 
     def test_each_leg_marked_at_its_own_last_quote(self):
