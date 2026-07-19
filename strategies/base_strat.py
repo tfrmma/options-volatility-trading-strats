@@ -186,3 +186,13 @@ class BaseVolStrategy(ABC):
             "vega_limit_breach":  vega_notional > self.max_vega_notional,
             "delta_limit_breach": abs(greeks.delta * self.spot) > self.max_delta_notional,
         }
+
+
+class UnderlyingBook(BaseVolStrategy):
+    # concrete BaseVolStrategy with no signal logic of its own. used as a per-underlying
+    # leg/greeks/PnL container by strategies that trade more than one underlying at once
+    # (dispersion: index + N components), composed rather than inherited so the
+    # multi-underlying case doesn't leak into the single-spot assumption everything
+    # else in this base class is built on.
+    def generate_signals(self, market_data: dict) -> list:
+        return []
