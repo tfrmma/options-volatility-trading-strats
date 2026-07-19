@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MarketSnapshot:
+    # TODO: spot/bid/ask here are single-underlying. dispersion has an index book plus
+    # N component books each on a different underlying, this snapshot shape can't carry
+    # that. Backtesting dispersion end to end through this engine needs a bigger change
+    # than the per-instrument quote cache below, not attempted here.
     timestamp: float
     spot: float
     sigma: float
@@ -61,12 +65,29 @@ class BacktestResult:
         dd     = (equity - peak) / np.where(peak > 0, peak, 1.0)
         return float(np.min(dd))
 
-    def sharpe(self, ann_factor: float = 252.0) -> float:
+    def sharpe(self, ann_factor: Optional[float] = None) -> float:
         if len(self.pnl_series) < 2:
             return 0.0
-        daily = np.diff(self.pnl_series)
-        std   = np.std(daily, ddof=1)
-        return float(np.mean(daily) / std * np.sqrt(ann_factor)) if std > 1e-10 else 0.0
+        pnl_diffs = np.diff(self.pnl_series)
+        std = np.std(pnl_diffs, ddof=1)
+        if std <= 1e-10:
+            return 0.0
+        if ann_factor is None:
+            ann_factor = self._infer_ann_factor()
+        return float(np.mean(pnl_diffs) / std * np.sqrt(ann_factor))
+
+    def _infer_ann_factor(self) -> float:
+        # periods/year from the actual timestamp spacing instead of assuming daily bars,
+        # this engine runs on anything from tick data to daily closes, a hardcoded 252
+        # is wrong for anything that isn't literally daily
+        if len(self.equity_curve) < 2:
+            return 252.0
+        timestamps = np.array([t for t, _ in self.equity_curve])
+        dt = float(np.median(np.diff(timestamps)))
+        if dt <= 0:
+            return 252.0
+        seconds_per_year = 365.25 * 24 * 3600
+        return seconds_per_year / dt
 
     def summary(self) -> dict:
         return {
@@ -96,18 +117,25 @@ class BacktestEngine:
         self.result = BacktestResult()
         self._cash = initial_capital
         self._option_positions: dict[tuple, float] = {}
+        self._last_option_quotes: dict[tuple, tuple[float, float]] = {}
         self._spot_position: float = 0.0
 
     def run(self, data: pl.DataFrame, strategy_fn: Callable, verbose: bool = False) -> BacktestResult:
         self.result = BacktestResult()
         self._cash = self.initial_capital
         self._option_positions = {}
+        self._last_option_quotes = {}
         self._spot_position = 0.0
 
         for row in data.iter_rows(named=True):
             snap = self._parse_row(row)
             if snap is None:
                 continue
+
+            # cache this instrument's quote before filling/marking, _fill and _mtm both
+            # read from here so every instrument gets marked at its own last known quote,
+            # not whatever instrument happens to be ticking on the current row
+            self._last_option_quotes[(snap.strike, snap.expiry, snap.is_call)] = (snap.option_bid, snap.option_ask)
 
             for order in (strategy_fn(snap, self) or []):
                 self._fill(order, snap)
@@ -127,12 +155,20 @@ class BacktestEngine:
         qty       = abs(order["qty"])
 
         if is_option:
-            raw   = snap.option_ask if side == "buy" else snap.option_bid
+            key = (order["strike"], order["expiry"], order["is_call"])
+            quote = self._last_option_quotes.get(key)
+            if quote is None:
+                # can't fill an instrument we've never seen a quote for, shouldn't happen
+                # if strategies only order what they can see, but don't fabricate a price
+                logger.warning(f"no quote cached for {key}, skipping fill")
+                return None
+
+            bid, ask = quote
+            raw   = ask if side == "buy" else bid
             slip  = self.slippage_fn(raw, qty) * (1 if side == "buy" else -1)
             price = max(raw + slip, 0.0)
             fee   = qty * price * self.taker_fee
 
-            key   = (order["strike"], order["expiry"], order["is_call"])
             signed = qty if side == "buy" else -qty
             self._option_positions[key] = self._option_positions.get(key, 0.0) + signed
             self._cash -= signed * price + fee
@@ -154,16 +190,19 @@ class BacktestEngine:
         return fill
 
     def _mtm(self, snap: MarketSnapshot) -> float:
-        # mark options at mid, good enough for daily PnL, not for intraday
-        # TODO: this marks every open leg at the current snapshot's bid/ask, which is
-        # only correct if the feed emits one row per live instrument. multi-leg books
-        # (straddles, dispersion) need per-leg quotes here, not one snapshot's price
-        # applied across the board.
-        option_mid = 0.5 * (snap.option_bid + snap.option_ask)
+        # each open position is marked at the last quote actually observed for THAT
+        # instrument, not the current tick's quote applied across the board, fixes a
+        # real bug where multi-leg books (straddles, dispersion) got marked wrong
         mtm = self._spot_position * snap.spot
         for key, qty in self._option_positions.items():
-            if abs(qty) > 1e-10:
-                mtm += qty * option_mid
+            if abs(qty) < 1e-10:
+                continue
+            quote = self._last_option_quotes.get(key)
+            if quote is None:
+                logger.warning(f"no quote cached for open position {key}, marking at 0")
+                continue
+            bid, ask = quote
+            mtm += qty * 0.5 * (bid + ask)
         return mtm
 
     @staticmethod
