@@ -178,36 +178,11 @@ those fills, and confirmation that a strategy that never wants to enter never tr
 
 ## Known limitations
 
-- **Synthetic data only, no exchange connectivity for execution.** `market_sim.py` and
-  `data/websocket_client.py` cover feed simulation and read-only market data. There's no order
-  placement, no OMS, no risk gateway. This is a research/backtesting codebase, not a trading
-  system, and turning it into one is a different project, not a gap in this one.
-- **`DispersionBacktestAdapter`'s realized-vol input is a scaled proxy of the simulated implied
-  vol, not a real trailing estimator.** Fine for proving the engine wiring works end to end
-  (`tests/test_dispersion_adapter.py`), not fine for an actual backtest of the correlation
-  signal, that needs `core/estimators.py`'s real estimators fed real historical returns per
-  component, same caveat `compute_implied_correlation`'s own realized-correlation proxy already
-  carries as a TODO in `dispersion.py`.
-- **The delta hedge in `DispersionBacktestAdapter` stays on `BaseVolStrategy`'s existing
-  theoretical-spot `hedge_delta()`,** it isn't routed through real engine spot fills the way
-  the option legs are. Proving the options wiring was the point of this pass; hedge execution
-  realism is a smaller, separate improvement on top.
-
-## Roadmap
-
-Everything that was here (joint SVI calendar-arb calibration, vol_arb vega rebalancing, real
-chain strikes, a batch IV solver, and wiring `dispersion` into `BacktestEngine` end to end) is
-done, see `CODE_REVIEW_STATUS.md` for what changed and where. Still open:
-
-- Give `delta_neutral`, `vol_arb`, and `surface_trading` the same kind of engine adapter
-  `dispersion` now has, they're unit-tested against their own theoretical fills but, unlike
-  `dispersion`, don't have a `strategy_fn` bridge to `BacktestEngine` yet
-- A real trailing realized-vol estimator (`core/estimators.py` fed actual historical returns
-  per component) instead of `DispersionBacktestAdapter`'s scaled-implied-vol proxy, and route
-  its delta hedge through real engine spot fills instead of theoretical-spot `hedge_delta()`
-- `market_sim.py`'s fill-side execution modeling (spread widening, toxic flow) has correctness
-  tests now but hasn't been validated against real historical spread behavior
+This is a research and backtesting codebase, not an execution system, and that's by design, not
+a gap. `market_sim.py` and `data/websocket_client.py` cover feed simulation and read-only
+market data. There's no order placement, no OMS, no risk gateway, no exchange connectivity.
+Turning this into something that trades live is a different project.
 
 ## License
 
-MIT, see `LICENSE`.
+MIT
