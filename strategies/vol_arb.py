@@ -184,12 +184,7 @@ class VolArbStrategy(BaseVolStrategy):
         logger.info("vega_rebalanced", extra={"ratio": ratio, "target_vega_notional": target_vega_notional})
 
     def _flatten(self, sigma: float) -> None:
-        # hedge PnL is already fully accrued in self.pnl.delta_pnl via update_spot(),
-        # closing the hedge here is just zeroing the position, not a new PnL event.
-        while self.legs:
-            leg = self.legs[0]
-            self.remove_leg(0, bsm_price(self.spot, leg.strike, leg.expiry, self.rate, sigma, leg.is_call))
-        self.hedge_qty = 0.0
+        self.close_all(sigma)
 
     def _straddle_unit_vega(self, strike: float, expiry: float, sigma: float) -> float:
         _, _, vega, _, _ = bsm_greeks(self.spot, strike, expiry, self.rate, sigma, True)
