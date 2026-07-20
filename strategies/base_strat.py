@@ -191,6 +191,16 @@ class BaseVolStrategy(ABC):
         logger.info("leg_partial_closed", extra={"pnl": pnl, "K": leg.strike, "closed_qty": closed})
         return pnl
 
+    def close_all(self, sigma: float) -> None:
+        # flattens every leg and zeroes the hedge. hedge PnL is already fully accrued in
+        # self.pnl.delta_pnl via update_spot(), so this doesn't book anything new for the
+        # hedge, just zeroes the position. delta_neutral._close_all and vol_arb._flatten
+        # used to each carry their own copy of exactly this, this is the one copy now.
+        while self.legs:
+            leg = self.legs[0]
+            self.remove_leg(0, bsm_price(self.spot, leg.strike, leg.expiry, self.rate, sigma, leg.is_call))
+        self.hedge_qty = 0.0
+
     def mark_to_market(self, sigma: float) -> float:
         # NOTE: spread_capture, gamma_pnl, theta_decay, vega_pnl are never populated
         # anywhere in this codebase, only delta_pnl and transaction_costs are tracked.
