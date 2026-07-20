@@ -5,6 +5,7 @@
 
 import pytest
 import numpy as np
+import polars as pl
 
 from backtest.engine import BacktestEngine
 from backtest.market_sim import SimConfig, simulate_dispersion_feed
@@ -97,3 +98,50 @@ class TestDispersionEndToEnd:
 
         assert engine.result.fills == []
         assert result.equity_curve[-1][1] == pytest.approx(1_000_000.0)
+
+
+class TestRealizedVolEstimator:
+
+    def test_warm_up_uses_proxy_then_switches_to_close_to_close(self):
+        from backtest.dispersion_adapter import DispersionBacktestAdapter, _MIN_RV_HISTORY
+
+        engine, adapter, strategy, feed = build_scenario()
+        # feed spot history for one symbol directly, bypassing __call__, to isolate
+        # _realized_vol from the rest of the adapter's decision logic
+        sym = "ETH"
+        adapter._spot_history[sym] = [3000.0] * (_MIN_RV_HISTORY - 1)
+        warm_up_rv = adapter._realized_vol(sym, fallback_sigma=0.7)
+        assert warm_up_rv == pytest.approx(0.7 * 0.3)   # still the warm-up proxy
+
+        adapter._spot_history[sym] = list(3000.0 * np.exp(np.cumsum(
+            np.random.default_rng(0).normal(0, 0.02, _MIN_RV_HISTORY + 5))))
+        real_rv = adapter._realized_vol(sym, fallback_sigma=0.7)
+        assert real_rv != pytest.approx(0.7 * 0.3)   # no longer the proxy
+        assert real_rv > 0.0
+
+    def test_history_does_not_double_append_within_the_same_tick(self):
+        # a symbol gets 2 rows per tick (call + put), spot is identical on both,
+        # history should only record it once per actual tick, not once per row
+        engine, adapter, strategy, feed = build_scenario()
+        engine.run(feed, adapter)
+        n_ticks = feed.filter(pl.col("symbol") == "ETH")["timestamp"].n_unique()
+        assert len(adapter._spot_history["ETH"]) <= n_ticks
+
+
+class TestHedgeThroughRealFills:
+
+    def test_hedge_produces_real_spot_fills_tagged_by_symbol(self):
+        engine, adapter, strategy, feed = build_scenario()
+        engine.run(feed, adapter)
+
+        spot_fills = [f for f in engine.result.fills if not f.is_option]
+        assert len(spot_fills) > 0
+        assert {f.symbol for f in spot_fills}.issubset({"BTC", "ETH", "SOL"})
+
+    def test_hedge_fee_comes_from_the_engine_not_a_theoretical_calculation(self):
+        engine, adapter, strategy, feed = build_scenario()
+        engine.run(feed, adapter)
+
+        spot_fills = [f for f in engine.result.fills if not f.is_option]
+        assert len(spot_fills) > 0
+        assert all(f.fee != 0.0 for f in spot_fills)  # taker_fee=0.0006, never exactly 0
